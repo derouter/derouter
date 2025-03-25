@@ -1,23 +1,33 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 
-use futures::{StreamExt as _, stream::FuturesUnordered};
 use rpc::{
 	inbound::{
 		InboundFrame,
-		request::{InboundRequestFrameData, config::ConsumerConfig},
+		request::{
+			InboundRequestFrame, InboundRequestFrameData, config::ConsumerConfig,
+		},
 	},
 	outbound::{
 		OutboundFrame,
-		response::{OutboundResponseFrame, OutboundResponseFrameData},
+		request::{OutboundRequestFrame, OutboundRequestFrameData},
+		response::{
+			OutboundResponseFrame, OutboundResponseFrameData,
+			config::ConsumerConfigResponse,
+		},
 	},
 };
-use tokio::{io::AsyncWriteExt as _, net::TcpStream, sync::Mutex};
+use tokio::{
+	io::AsyncWriteExt as _,
+	net::TcpStream,
+	sync::{Mutex, broadcast::error::RecvError},
+};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use crate::{
-	state::OfferNotification,
+	database::{fetch_offers, fetch_providers},
+	state::{ConsumerNotification, SharedState},
 	util::{
-		self, ArcMutex,
+		self,
 		cbor::{CborReader, write_cbor},
 	},
 };
@@ -27,10 +37,7 @@ mod rpc;
 pub async fn handle_connection(
 	stream: TcpStream,
 	_addr: SocketAddr,
-	mut signal: tokio::sync::watch::Receiver<bool>,
-	offer_txs: ArcMutex<
-		HashMap<String, tokio::sync::broadcast::Sender<OfferNotification>>,
-	>,
+	state: &SharedState,
 ) {
 	let (rpc_stream_tx, rpc_stream_rx) =
 		tokio::sync::oneshot::channel::<yamux::Stream>();
@@ -56,21 +63,21 @@ pub async fn handle_connection(
 	});
 
 	let rpc_stream = rpc_stream_rx.await.unwrap();
+	let mut outbound_requests_counter = 0u32;
 	let mut cbor_reader = CborReader::new(rpc_stream.compat());
 	let (outbound_tx, mut outbound_rx) =
 		tokio::sync::mpsc::channel::<OutboundFrame>(16);
-	let mut offer_rxs =
-		Vec::<tokio::sync::broadcast::Receiver<OfferNotification>>::new();
 	let mut config: Option<ConsumerConfig> = None;
 
-	loop {
-		let mut offer_rxs_any: FuturesUnordered<_> =
-			offer_rxs.iter_mut().map(|recv| recv.recv()).collect();
+	let consumer_lock = state.consumer.lock().await;
+	let mut notifications_rx = consumer_lock.notification_tx.subscribe();
+	drop(consumer_lock);
 
+	loop {
 		tokio::select! {
 			biased;
 
-			result = signal.changed() => {
+			result = state.shutdown_token.cancelled() => {
 				log::debug!(
 					"Breaking RPC loop: {:?}",
 					result
@@ -82,44 +89,7 @@ pub async fn handle_connection(
 			result = cbor_reader.next_cbor::<InboundFrame>() => {
 				match result {
 					Ok(Some(InboundFrame::Request(request))) => {
-						match request.data {
-							InboundRequestFrameData::Config(data) => {
-								log::debug!("⬅️ {:?}", data);
-
-								if config.is_some() {
-									log::warn!("Already set config, ignoring");
-									continue;
-								}
-
-								drop(offer_rxs_any);
-
-								let mut offer_txs = offer_txs.lock().await;
-
-								for protocol in &data.protocols {
-									let offer_rx = if let Some(tx) = offer_txs.get_mut(protocol) {
-										tx.subscribe()
-									} else {
-										let (tx, rx) = tokio::sync::broadcast::channel::<OfferNotification>(16);
-										offer_txs.insert(protocol.clone(), tx);
-										rx
-									};
-
-									log::debug!("Subscribed to {}", protocol);
-									offer_rxs.push(offer_rx);
-								}
-
-								drop(offer_txs);
-
-								config = Some(data);
-
-								let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
-									id:request.id,
-									data: OutboundResponseFrameData::Ack
-								});
-
-								let _ = outbound_tx.send(outbound_frame).await;
-							}
-						}
+						handle_request(state, &outbound_tx, &mut config, request).await;
 					},
 
 					Ok(None) => {
@@ -148,29 +118,74 @@ pub async fn handle_connection(
 				}
 			}
 
-			result = offer_rxs_any.next() => {
+			result = notifications_rx.recv() => {
 				match result {
-					Some(Ok(_)) => todo!(),
-					Some(Err(_)) => todo!(),
-					None => todo!(),
+					Ok(event) => {
+						if config.is_none() {
+							log::warn!("Skipping consumer event because it's not configured yet");
+							continue;
+						}
+
+						outbound_requests_counter += 1;
+
+						let outbound_frame = OutboundFrame::Request(OutboundRequestFrame {
+							id: outbound_requests_counter,
+							data: match event {
+								ConsumerNotification::OfferRemoved(data) => OutboundRequestFrameData::OfferRemoved(data),
+								ConsumerNotification::OfferUpdated(data) => OutboundRequestFrameData::OfferUpdated(data),
+								ConsumerNotification::ProviderHeartbeat(data) => OutboundRequestFrameData::ProviderHeartbeat(data),
+								ConsumerNotification::ProviderUpdated(data) => OutboundRequestFrameData::ProviderUpdated(data),
+							}
+						});
+
+						outbound_tx.send(outbound_frame).await.unwrap();
+					},
+
+					Err(RecvError::Lagged(e)) => {
+						log::warn!("{:?}", e);
+					}
+
+					Err(e) => {
+						panic!("{:?}", e);
+					}
 				}
 			}
 		}
 	}
+}
 
-	if let Some(config) = config {
-		let mut offer_txs = offer_txs.lock().await;
+async fn handle_request(
+	state: &SharedState,
+	outbound_tx: &tokio::sync::mpsc::Sender<OutboundFrame>,
+	config: &mut Option<ConsumerConfig>,
+	request: InboundRequestFrame,
+) {
+	match request.data {
+		InboundRequestFrameData::Config(data) => {
+			log::debug!("⬅️ {:?}", data);
 
-		// Clean up the protocol subscriptions.
-		for protocol in &config.protocols {
-			if let Some(tx) = offer_txs.get_mut(protocol) {
-				if tx.receiver_count() == 0 {
-					log::debug!("Removing sender for protocol: {}", protocol);
-					offer_txs.remove(protocol);
-				}
+			if config.is_some() {
+				log::warn!("Already set config, ignoring");
+				return;
 			}
+
+			*config = Some(data);
+
+			let outbound_frame = {
+				let database = state.database.lock().await;
+
+				OutboundFrame::Response(OutboundResponseFrame {
+					id: request.id,
+					data: OutboundResponseFrameData::Config(ConsumerConfigResponse {
+						providers: fetch_providers(&database),
+						offers: fetch_offers(&database),
+					}),
+				})
+			};
+
+			outbound_tx.send(outbound_frame).await.unwrap();
 		}
 
-		drop(offer_txs);
+		InboundRequestFrameData::OpenConnection(_) => todo!(),
 	}
 }

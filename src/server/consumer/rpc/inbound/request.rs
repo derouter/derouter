@@ -1,11 +1,15 @@
+use config::ConsumerConfig;
+use open_connection::OpenConnection;
 use serde::{Deserialize, Serialize};
 
 pub mod config;
+pub mod open_connection;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", content = "data")]
 pub enum InboundRequestFrameData {
-	Config(config::ConsumerConfig),
+	Config(ConsumerConfig),
+	OpenConnection(OpenConnection),
 }
 
 #[derive(Serialize, Deserialize, Debug)]

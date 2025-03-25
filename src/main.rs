@@ -1,23 +1,54 @@
-use clap::Parser as _;
-use state::SharedState;
+use std::path::PathBuf;
 
+use clap::Parser as _;
+use serde::{Deserialize, Serialize};
+use state::SharedState;
+use util::to_arc;
+
+mod database;
+mod dto;
 mod logger;
+mod p2p;
 mod server;
 mod state;
 mod util;
 
-// We want the default project name to be `org.derouter`.
-// TODO: Allow to override this (e.g. for a Tauri app).
-const APP_QUALIFIER: &str = "org";
-const APP_ORG: &str = "";
-const APP_NAME: &str = "derouter";
-
 #[derive(clap::Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-	/// HTTP server port.
-	#[arg(long, short, default_value = "4269")]
-	port: u16,
+	/// Path to configuration file (`.json`, `.json5` or `.jsonc`).
+	#[arg(long, short)]
+	config: Option<PathBuf>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UserProviderConfig {
+	pub name: Option<String>,
+	pub teaser: Option<String>,
+	pub description: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UserServerConfig {
+	pub port: Option<u16>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UserConfig {
+	/// An optional path to the database file,
+	/// otherwise [`data_dir`] + `"db.sqlite"`.
+	pub database_path: Option<PathBuf>,
+
+	/// An optional path to the P2P keypair file,
+	/// otherwise [`data_dir`] + `"keypair.bin"`.
+	pub keypair_path: Option<PathBuf>,
+
+	/// An optional path to the data directory,
+	/// otherwise platform-specific.
+	pub data_dir: Option<PathBuf>,
+
+	pub server: Option<UserServerConfig>,
+	pub provider: Option<UserProviderConfig>,
 }
 
 #[tokio::main]
@@ -27,32 +58,59 @@ async fn main() -> eyre::Result<()> {
 	let args = Args::parse();
 	log::debug!("{:?}", args);
 
-	let project_dirs =
-		directories::ProjectDirs::from(APP_QUALIFIER, APP_ORG, APP_NAME)
-			.expect("should get project directories");
+	let config = if let Some(config_path) = args.config {
+		let config_string = std::fs::read_to_string(config_path)?;
+		Some(json5::from_str::<UserConfig>(&config_string)?)
+	} else {
+		None
+	};
+	log::debug!("{:?}", config);
 
-	let state = SharedState::new(project_dirs)?;
+	let shutdown_token = tokio_util::sync::CancellationToken::new();
+	let state = to_arc(SharedState::new(&config, shutdown_token.child_token())?);
 
-	let (signal_tx, signal_rx) = tokio::sync::watch::channel(false);
+	let shutdown_token_clone = shutdown_token.clone();
+	tokio::spawn(async move {
+		tokio::signal::ctrl_c().await.unwrap();
+		log::info!("🛑 Sending shutdown signal");
+		shutdown_token_clone.cancel();
+	});
 
-	let server_handle = tokio::spawn(async move {
-		if let Err(e) = server::run(args.port, signal_rx, state.clone()).await {
-			log::error!("{}", e)
+	let tracker = tokio_util::task::TaskTracker::new();
+
+	let state_clone = state.clone();
+	let shutdown_token_clone = shutdown_token.clone();
+
+	let p2p_handle = tracker.spawn(async move {
+		if let Err(e) = p2p::run_p2p(state_clone).await {
+			log::error!("{:?}", e);
+			shutdown_token_clone.cancel();
 		}
 	});
 
-	tokio::select! {
-		r = tokio::signal::ctrl_c() => {
-			r.expect("should set CTRL+C signal handler");
-			signal_tx.send(true).expect("should send signal_tx");
-		},
+	let state_clone = state.clone();
+	let shutdown_token_clone = shutdown_token.clone();
 
-		r = server_handle => {
-			r.unwrap();
+	let server_handle = tracker.spawn(async move {
+		if let Err(e) = server::run_server(state_clone).await {
+			log::error!("{:?}", e);
+			shutdown_token_clone.cancel();
+		}
+	});
+
+	tracker.close();
+
+	match tokio::try_join!(p2p_handle, server_handle) {
+		Ok(_) => {
+			log::debug!("✨ Clean exit")
+		}
+		Err(e) => {
+			log::error!("{}", e);
+			shutdown_token.cancel();
 		}
 	}
 
-	signal_tx.closed().await;
+	tracker.wait().await;
 
 	Ok(())
 }

@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::{
 	io::AsyncReadExt,
 	net::{TcpListener, TcpStream},
@@ -13,31 +13,16 @@ mod provider;
 async fn handle_connection(
 	mut stream: TcpStream,
 	addr: SocketAddr,
-	signal: tokio::sync::watch::Receiver<bool>,
-	state: SharedState,
+	state: Arc<SharedState>,
 ) {
 	match stream.read_u8().await {
 		Ok(0u8) => {
-			provider::handle_connection(
-				stream,
-				addr,
-				signal,
-				state.all_provided_offers,
-			)
-			.await;
-
+			provider::handle_connection(stream, addr, &state).await;
 			log::debug!("Closed provider connection at {}", addr)
 		}
 
 		Ok(1u8) => {
-			consumer::handle_connection(
-				stream,
-				addr,
-				signal,
-				state.consumer_offers_txs,
-			)
-			.await;
-
+			consumer::handle_connection(stream, addr, &state).await;
 			log::debug!("Closed consumer connection at {}", addr)
 		}
 
@@ -51,11 +36,9 @@ async fn handle_connection(
 	}
 }
 
-pub async fn run(
-	port: u16,
-	mut signal: tokio::sync::watch::Receiver<bool>,
-	state: SharedState,
-) -> eyre::Result<()> {
+pub async fn run_server(state: Arc<SharedState>) -> eyre::Result<()> {
+	let port = state.config.server.port;
+
 	let addr = SocketAddr::from(([127, 0, 0, 1], port));
 	let listener = TcpListener::bind(addr).await?;
 	log::info!("👂 Listening on tcp://{}", addr);
@@ -70,12 +53,11 @@ pub async fn run(
 				connections.spawn(handle_connection(
 					stream,
 					addr,
-					signal.clone(),
 					state.clone()
 				));
 			},
 
-			_ = signal.changed() => {
+			_ = state.shutdown_token.cancelled() => {
 				log::info!("🛑 Shutting down...");
 				connections.join_all().await;
 				log::debug!("✅ All connections closed");

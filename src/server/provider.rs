@@ -17,9 +17,9 @@ use tokio_util::compat::FuturesAsyncReadCompatExt;
 use unwrap_none::UnwrapNone as _;
 
 use crate::{
-	state::ProviderOffer,
+	state::{ProviderOffer, SharedState},
 	util::{
-		self, ArcMutex,
+		self,
 		cbor::{CborReader, write_cbor},
 	},
 };
@@ -29,10 +29,7 @@ mod rpc;
 pub async fn handle_connection(
 	stream: TcpStream,
 	_addr: SocketAddr,
-	mut signal: tokio::sync::watch::Receiver<bool>,
-	all_provided_offers: ArcMutex<
-		HashMap<String, HashMap<String, ProviderOffer>>,
-	>,
+	state: &SharedState,
 ) {
 	let (rpc_stream_tx, rpc_stream_rx) =
 		tokio::sync::oneshot::channel::<yamux::Stream>();
@@ -67,7 +64,7 @@ pub async fn handle_connection(
 		tokio::select! {
 			biased;
 
-			_ = signal.changed() => {
+			_ = state.shutdown_token.cancelled() => {
 				log::debug!("Breaking RPC loop due to signal");
 				break;
 			}
@@ -92,7 +89,7 @@ pub async fn handle_connection(
 									break; // Break the loop to drop the connection.
 								}
 
-								match apply_config(data, &all_provided_offers).await {
+								match apply_config(data, state).await {
 									Ok(data) => {
 										log::debug!("Config validated");
 
@@ -156,38 +153,36 @@ pub async fn handle_connection(
 	if let Some(config) = config {
 		log::debug!("Cleaning up...");
 
-		let mut all_offers = all_provided_offers.lock().await;
+		let mut lock = state.provider.lock().await;
 
 		for config_offer in &config.offers {
 			let protocol_id = &config_offer.1.protocol;
 			let offer_id = config_offer.0;
 
-			all_offers
-				.get_mut(protocol_id)
-				.unwrap()
-				.remove(offer_id)
-				.unwrap();
+			let offers_by_protocol = lock.actual_offers.get_mut(protocol_id).unwrap();
+			offers_by_protocol.remove(offer_id).unwrap();
 
-			if all_offers.get_mut(protocol_id).iter().len() == 0 {
-				all_offers.remove(protocol_id);
+			if offers_by_protocol.is_empty() {
+				lock.actual_offers.remove(protocol_id);
+				log::debug!("Removed empty protocol hash: {}", protocol_id);
 			}
 		}
+
+		lock.last_updated_at = chrono::Utc::now();
 	}
 }
 
 async fn apply_config(
 	config: ProviderConfig,
-	all_provided_offers: &ArcMutex<
-		HashMap<String, HashMap<String, ProviderOffer>>,
-	>,
+	state: &SharedState,
 ) -> Result<ProviderConfig, ConfigResponse> {
-	let mut all_offers = all_provided_offers.lock().await;
+	let mut lock = state.provider.lock().await;
 
 	for config_offer in &config.offers {
 		let protocol_id = &config_offer.1.protocol;
 		let offer_id = config_offer.0;
 
-		if let Some(offers_by_id) = all_offers.get_mut(protocol_id) {
+		if let Some(offers_by_id) = lock.actual_offers.get_mut(protocol_id) {
 			if offers_by_id.get(offer_id).is_some() {
 				log::warn!("Duplicate offer {} => {}", protocol_id, offer_id);
 
@@ -205,11 +200,13 @@ async fn apply_config(
 	for config_offer in &config.offers {
 		let protocol_id = &config_offer.1.protocol;
 
-		let offers_by_id = match all_offers.get_mut(protocol_id) {
+		let offers_by_id = match lock.actual_offers.get_mut(protocol_id) {
 			Some(x) => x,
 			None => &mut {
-				all_offers.insert(protocol_id.clone(), HashMap::new());
-				all_offers.get_mut(protocol_id).unwrap()
+				lock
+					.actual_offers
+					.insert(protocol_id.clone(), HashMap::new());
+				lock.actual_offers.get_mut(protocol_id).unwrap()
 			},
 		};
 
@@ -217,13 +214,15 @@ async fn apply_config(
 			.insert(
 				config_offer.0.to_string(),
 				ProviderOffer {
-					_protocol_payload: config_offer.1.protocol_payload.clone(),
+					protocol_payload: config_offer.1.protocol_payload.clone(),
 				},
 			)
 			.unwrap_none();
 
 		log::trace!("Inserted {:?}", config_offer);
 	}
+
+	lock.last_updated_at = chrono::Utc::now();
 
 	Ok(config)
 }

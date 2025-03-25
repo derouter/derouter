@@ -22,7 +22,7 @@ pub fn open_database(path: &Path) -> eyre::Result<rusqlite::Connection> {
 
 #[test]
 fn db_migrations_test() {
-	assert!(DB_MIGRATIONS.validate().is_ok());
+	DB_MIGRATIONS.validate().unwrap();
 }
 
 pub fn fetch_providers(
@@ -56,7 +56,7 @@ pub fn fetch_providers(
 				teaser: row.get(2)?,
 				description: row.get(3)?,
 				updated_at: row.get(4)?,
-				last_heartbeat_at: row.get(5)?,
+				latest_heartbeat_at: row.get(5)?,
 			})
 		})
 		.unwrap();
@@ -65,38 +65,40 @@ pub fn fetch_providers(
 }
 
 pub fn fetch_offers(database: &rusqlite::Connection) -> Vec<OfferUpdated> {
-	let mut stmt = database
+	let mut statement = database
 		.prepare_cached(
 			r#"
 				SELECT
-					provider_peer_id, -- 0
-					protocol_id,      -- 1
-					offer_id,         -- 2
-					protocol_payload, -- 3
+					ROWID,            -- 0
+					provider_peer_id, -- 1
+					protocol_id,      -- 2
+					offer_id,         -- 3
+					protocol_payload, -- 4
 				FROM
-					offers
+					offer_snapshots
 				WHERE
-					enabled = 1
+					active = 1
 			"#,
 		)
 		.unwrap();
 
-	let offers = stmt
+	let offer_snapshots = statement
 		.query_map([], |row| {
 			Ok(OfferUpdated {
+				snapshot_id: row.get(0)?,
 				provider_peer_id: libp2p::PeerId::from_str(
-					row.get_ref(0)?.as_str().unwrap(),
+					row.get_ref(1)?.as_str().unwrap(),
 				)
 				.unwrap(),
-				protocol_id: row.get(1)?,
-				offer_id: row.get(2)?,
-				_protocol_payload: serde_json::from_str(
-					row.get_ref(3)?.as_str().unwrap(),
+				protocol_id: row.get(2)?,
+				offer_id: row.get(3)?,
+				protocol_payload: serde_json::from_str(
+					row.get_ref(4)?.as_str().unwrap(),
 				)
 				.expect("shall deserialize offer payload"),
 			})
 		})
 		.unwrap();
 
-	offers.map(|p| p.unwrap()).collect()
+	offer_snapshots.map(|p| p.unwrap()).collect()
 }

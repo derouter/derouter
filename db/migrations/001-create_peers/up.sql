@@ -2,17 +2,17 @@ CREATE TABLE
   peers (
     peer_id TEXT PRIMARY KEY,
     --
-    -- When the peer was discovered for the first time, in our clock.
-    discovered_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    --
     provider_name TEXT,
     provider_teaser TEXT,
     provider_description TEXT,
     --
-    -- When the provider was last updated, in their clock.
+    -- When the peer was discovered for the first time, in our clock.
+    discovered_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    --
+    -- When the provider details were last updated, in their clock.
     their_provider_updated_at TIMESTAMP,
     --
-    -- When the provider was last updated, in our clock.
+    -- When the provider details were last updated, in our clock.
     our_provider_updated_at TIMESTAMP,
     --
     -- Latest heartbeat timestamp, in their clock.

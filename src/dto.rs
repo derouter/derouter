@@ -6,7 +6,7 @@ pub struct ProviderHeartbeat {
 
 	/// The heartbeat's timestamp in our clock.
 	#[serde(with = "chrono::serde::ts_seconds")]
-	pub last_heartbeat_at: chrono::DateTime<chrono::Utc>,
+	pub latest_heartbeat_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -23,20 +23,23 @@ pub struct ProviderUpdated {
 
 	/// The heartbeat's timestamp in our clock.
 	#[serde(with = "chrono::serde::ts_seconds")]
-	pub last_heartbeat_at: chrono::DateTime<chrono::Utc>,
+	pub latest_heartbeat_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// This offer has been updated with a new snapshot.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct OfferUpdated {
+	/// Offer snapshot ID, unique per database.
+	pub snapshot_id: i64,
+
 	pub provider_peer_id: libp2p::PeerId,
 	pub protocol_id: String,
 	pub offer_id: String,
-	pub _protocol_payload: serde_json::Value,
+	pub protocol_payload: serde_json::Value,
 }
 
+/// This offer is not available anymore.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct OfferRemoved {
-	pub _provider_peer_id: libp2p::PeerId,
-	pub protocol_id: String,
-	pub _offer_id: String,
+	pub snapshot_id: i64,
 }

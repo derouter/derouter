@@ -1,4 +1,5 @@
 use std::{
+	collections::HashMap,
 	fs::create_dir_all,
 	hash::{DefaultHasher, Hash as _, Hasher as _},
 	path::Path,
@@ -6,22 +7,53 @@ use std::{
 	time::Duration,
 };
 
-use futures::StreamExt as _;
+use either::Either::{Left, Right};
+use eyre::eyre;
+use futures::{AsyncWriteExt, StreamExt as _};
 use handle_heartbeat::handle_heartbeat;
 use libp2p::{
-	StreamProtocol, Swarm, SwarmBuilder, gossipsub,
+	PeerId, Stream, StreamProtocol, Swarm, SwarmBuilder, gossipsub,
 	identity::Keypair,
-	mdns, noise, ping, request_response,
+	mdns, noise, ping,
+	request_response::{self, OutboundRequestId},
 	swarm::{self, SwarmEvent},
 	tcp, yamux,
 };
+use libp2p_stream::{Control, OpenStreamError};
+use tokio_util::compat::FuturesAsyncReadCompatExt;
+use unwrap_none::UnwrapNone;
 
-use crate::state::SharedState;
+use crate::{
+	database::create_service_connection,
+	server,
+	state::{ProviderOutboundRequestEnvelope, SharedState},
+	util::cbor::{read_cbor, write_cbor},
+};
 
 mod handle_heartbeat;
 pub mod proto;
 
-// const STREAM_PROTOCOL: &str = "/derouter/stream/0.1.0";
+pub type InboundResponse =
+	Result<proto::request_response::Response, request_response::OutboundFailure>;
+
+/// An outbound Request-Response protocol request envelope.
+pub struct OutboundReqResRequestEnvelope {
+	pub target_peer_id: PeerId,
+	pub request: proto::request_response::Request,
+	pub response_tx: tokio::sync::oneshot::Sender<InboundResponse>,
+}
+
+/// `(our_peer_id, stream)`.
+pub type OutboundStreamRequestResult =
+	Result<(PeerId, Stream), OpenStreamError>;
+
+pub struct OutboundStreamRequest {
+	pub target_peer_id: PeerId,
+	pub head_request: proto::stream::HeadRequest,
+	pub result_tx: tokio::sync::oneshot::Sender<OutboundStreamRequestResult>,
+}
+
+const STREAM_PROTOCOL: &str = "/derouter/stream/0.1.0";
 const REQUEST_RESPONSE_PROTOCOL: &str = "/derouter/reqres/0.1.0";
 
 pub fn read_or_create_keypair(keypair_path: &Path) -> eyre::Result<Keypair> {
@@ -57,7 +89,13 @@ pub struct NodeBehaviour {
 	gossipsub: gossipsub::Behaviour,
 }
 
-pub async fn run_p2p(state: Arc<SharedState>) -> eyre::Result<()> {
+pub async fn run_p2p(
+	state: Arc<SharedState>,
+	mut reqres_request_rx: tokio::sync::mpsc::Receiver<
+		OutboundReqResRequestEnvelope,
+	>,
+	mut stream_request_rx: tokio::sync::mpsc::Receiver<OutboundStreamRequest>,
+) -> eyre::Result<()> {
 	let keypair = read_or_create_keypair(&state.config.keypair_path)?;
 
 	let mdns = mdns::tokio::Behaviour::new(
@@ -134,17 +172,72 @@ pub async fn run_p2p(state: Arc<SharedState>) -> eyre::Result<()> {
 
 	log::info!("📡 Running w/ PeerID {}", swarm.local_peer_id());
 
+	let mut response_tx_map = HashMap::<
+		OutboundRequestId,
+		tokio::sync::oneshot::Sender<InboundResponse>,
+	>::new();
+
+	let mut control = swarm.behaviour().stream.new_control();
+	let mut incoming_streams = control
+		.accept(StreamProtocol::new(STREAM_PROTOCOL))
+		.unwrap();
+
 	loop {
 		#[rustfmt::skip]
 		tokio::select! {
 		  event = swarm.next() => {
         if let Some(event) = event {
-          handle_event(&state, &mut swarm, event, heartbeat_topic.clone()).await;
+          handle_event(&state, &mut swarm, event, heartbeat_topic.clone(), &mut response_tx_map).await;
         } else {
           log::debug!("Empty swarm event, breaking loop");
           break;
         }
 		  }
+
+			envelope = reqres_request_rx.recv() => {
+				if let Some(envelope) = envelope {
+					let outbound_request_id = swarm
+						.behaviour_mut()
+						.request_response
+						.send_request(&envelope.target_peer_id, envelope.request);
+
+					response_tx_map.insert(outbound_request_id, envelope.response_tx);
+				} else {
+					log::warn!("reqres_request_rx closed, breaking loop");
+          break;
+				}
+			}
+
+			request = stream_request_rx.recv() => {
+				if let Some(request) = request {
+					let control = swarm.behaviour_mut().stream.new_control();
+					let peer_id = *swarm.local_peer_id();
+					tokio::spawn(handle_outbound_stream_request(peer_id, control, request));
+				} else {
+					log::warn!("stream_header_rx closed, breaking loop");
+          break;
+				}
+			}
+
+			incoming_stream = incoming_streams.next() => {
+				if let Some((peer_id, stream)) = incoming_stream {
+					let future = handle_incoming_stream(
+						state.clone(),
+						peer_id,
+						*swarm.local_peer_id(),
+						stream
+					);
+
+					tokio::spawn(async move {
+						if let Err(e) = future.await {
+							log::warn!("{:?}", e);
+						}
+					});
+				} else {
+					log::warn!("incoming_streams returned None, breaking loop");
+          break;
+				}
+			}
 
       _ = provider_heartbeat_interval.tick() => {
         try_send_heartbeat(&state, &mut swarm, heartbeat_topic.clone()).await?;
@@ -169,9 +262,34 @@ async fn try_send_heartbeat<T: Into<gossipsub::TopicHash>>(
 ) -> eyre::Result<()> {
 	let lock = state.provider.lock().await;
 
-	if lock.actual_offers.is_empty() {
+	if lock.offers.is_empty() {
 		log::debug!("No provided offers, skip heartbeat");
 		return Ok(());
+	}
+
+	let mut heartbeat_offers =
+		HashMap::<String, HashMap<String, proto::gossipsub::ProviderOffer>>::new();
+
+	for (protocol_id, provided_offers_by_protocol) in &lock.offers {
+		let heartbeat_offers_by_protocol =
+			match heartbeat_offers.get_mut(protocol_id) {
+				Some(map) => map,
+				None => {
+					heartbeat_offers.insert(protocol_id.clone(), HashMap::new());
+					heartbeat_offers.get_mut(protocol_id).unwrap()
+				}
+			};
+
+		for (offer_id, provided_offer) in provided_offers_by_protocol {
+			heartbeat_offers_by_protocol
+				.insert(
+					offer_id.clone(),
+					proto::gossipsub::ProviderOffer {
+						protocol_payload: provided_offer.protocol_payload.clone(),
+					},
+				)
+				.unwrap_none();
+		}
 	}
 
 	let message = proto::gossipsub::Heartbeat {
@@ -179,7 +297,7 @@ async fn try_send_heartbeat<T: Into<gossipsub::TopicHash>>(
 			name: state.config.provider.name.clone(),
 			teaser: state.config.provider.teaser.clone(),
 			description: state.config.provider.description.clone(),
-			offers: lock.actual_offers.clone(),
+			offers: heartbeat_offers,
 			updated_at: lock.last_updated_at,
 		}),
 		timestamp: chrono::Utc::now(),
@@ -223,8 +341,12 @@ async fn handle_event<T: Into<gossipsub::TopicHash>>(
 	swarm: &mut Swarm<NodeBehaviour>,
 	event: SwarmEvent<NodeBehaviourEvent>,
 	heartbeat_topic: T,
+	response_tx_map: &mut HashMap<
+		OutboundRequestId,
+		tokio::sync::oneshot::Sender<InboundResponse>,
+	>,
 ) {
-	match &event {
+	match event {
 		SwarmEvent::Behaviour(event) => match event {
 			NodeBehaviourEvent::Mdns(event) => match event {
 				mdns::Event::Discovered(items) => {
@@ -250,10 +372,62 @@ async fn handle_event<T: Into<gossipsub::TopicHash>>(
 
 			NodeBehaviourEvent::RequestResponse(event) => {
 				match event {
-					request_response::Event::Message { .. } => todo!(),
-					request_response::Event::OutboundFailure { .. } => todo!(),
-					request_response::Event::InboundFailure { .. } => todo!(),
-					request_response::Event::ResponseSent { .. } => todo!(),
+					request_response::Event::Message {
+						peer,
+						connection_id,
+						message,
+					} => match message {
+						request_response::Message::Request { .. } => todo!(),
+
+						request_response::Message::Response {
+							request_id,
+							response,
+						} => {
+							log::debug!(
+								"ReqRes Response {{
+									peer: {peer},
+									connection_id: {connection_id},
+									request_id: {request_id},
+									response: {:?} }}",
+								response
+							);
+
+							let tx = response_tx_map
+								.remove(&request_id)
+								.expect("should have response receiver in the map");
+
+							let _ = tx.send(InboundResponse::Ok(response));
+						}
+					},
+
+					request_response::Event::OutboundFailure {
+						peer,
+						connection_id,
+						request_id,
+						error,
+					} => {
+						log::warn!(
+							"ReqRes OutboundFailure {{ \
+								peer: {peer}, \
+								connection_id: {connection_id},\
+								request_id: {request_id}, \
+								error: {error} }}"
+						);
+
+						let tx = response_tx_map
+							.remove(&request_id)
+							.expect("should have response receiver in the map");
+
+						let _ = tx.send(InboundResponse::Err(error));
+					}
+
+					request_response::Event::InboundFailure { .. } => {
+						log::warn!("ReqRes {:?}", event);
+					}
+
+					request_response::Event::ResponseSent { .. } => {
+						log::debug!("ReqRes {:?}", event);
+					}
 				};
 			}
 
@@ -348,11 +522,204 @@ async fn handle_event<T: Into<gossipsub::TopicHash>>(
 
 		SwarmEvent::NewExternalAddrOfPeer { peer_id, .. } => {
 			log::trace!("{:?}", event);
-			swarm.behaviour_mut().gossipsub.add_explicit_peer(peer_id);
+			swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
 		}
 
 		_ => {
 			log::error!("Unhandled {:?}", event)
+		}
+	}
+}
+
+async fn handle_outbound_stream_request(
+	our_peer_id: PeerId,
+	mut control: Control,
+	request: OutboundStreamRequest,
+) {
+	let result = open_outbound_stream(our_peer_id, &mut control, &request).await;
+	let _ = request.result_tx.send(result);
+}
+
+async fn open_outbound_stream(
+	our_peer_id: PeerId,
+	control: &mut Control,
+	request: &OutboundStreamRequest,
+) -> Result<(PeerId, Stream), OpenStreamError> {
+	let mut stream = control
+		.open_stream(request.target_peer_id, StreamProtocol::new(STREAM_PROTOCOL))
+		.await?;
+
+	let header_buffer = serde_cbor::to_vec(&request.head_request).unwrap();
+	let len_buffer = (header_buffer.len() as u32).to_be_bytes();
+
+	stream
+		.write_all(&len_buffer)
+		.await
+		.map_err(libp2p_stream::OpenStreamError::Io)?;
+
+	stream
+		.write_all(&header_buffer)
+		.await
+		.map_err(libp2p_stream::OpenStreamError::Io)?;
+
+	log::debug!("Successfully written {:?}", request.head_request);
+
+	Ok((our_peer_id, stream))
+}
+
+async fn handle_incoming_stream(
+	state: Arc<SharedState>,
+	from_peer_id: PeerId,
+	to_peer_id: PeerId,
+	stream: Stream,
+) -> eyre::Result<()> {
+	log::info!("🌊 Incoming stream from {:?}", from_peer_id);
+	let mut stream = stream.compat();
+
+	let header: proto::stream::HeadRequest = match read_cbor(&mut stream).await? {
+		Some(header) => {
+			log::debug!("Read {:?}", header);
+			header
+		}
+
+		None => {
+			log::warn!("P2P stream EOF'ed before header is read");
+			return Ok(());
+		}
+	};
+
+	match header {
+		proto::stream::HeadRequest::ServiceConnection {
+			protocol_id,
+			offer_id,
+			protocol_payload,
+		} => {
+			log::debug!("Locking provider...");
+			let provider = state.provider.lock().await;
+			let provided_offer = provider
+				.offers
+				.get(&protocol_id)
+				.and_then(|o| o.get(&offer_id))
+				.cloned();
+			drop(provider);
+
+			type ServiceConnectionHeadResponse =
+				proto::stream::ServiceConnectionHeadResponse;
+
+			let response = if let Some(ref provided_offer) = provided_offer {
+				let provided_payload_string =
+					serde_json::to_string(&provided_offer.protocol_payload)
+						.expect("should serialize provided offer payload");
+
+				if provided_payload_string == *protocol_payload {
+					log::debug!("🤝 Authorized incoming P2P stream");
+					ServiceConnectionHeadResponse::Ok
+				} else {
+					log::debug!(
+						"Protocol payload mismatch: {} vs {}",
+						provided_payload_string,
+						protocol_payload
+					);
+
+					ServiceConnectionHeadResponse::OfferNotFoundError
+				}
+			} else {
+				log::debug!("Could not find offer {} => {}", protocol_id, offer_id);
+				ServiceConnectionHeadResponse::OfferNotFoundError
+			};
+
+			let head_response =
+				proto::stream::HeadResponse::ServiceConnection(response.clone());
+
+			log::debug!("{:?}", head_response);
+			write_cbor(&mut stream, &head_response).await??;
+
+			let mut provided_offer = match response {
+				proto::stream::ServiceConnectionHeadResponse::Ok => {
+					provided_offer.unwrap()
+				}
+				_ => return Ok(()),
+			};
+
+			let mut database = state.database.lock().await;
+
+			let offer_snapshot =
+				if let Some(snapshot_rowid) = provided_offer.snapshot_rowid {
+					// If the provided offer is saved to DB, reuse its ROWID.
+					Left(snapshot_rowid)
+				} else {
+					// Otherwise, insert a new offer snapshot.
+					Right((
+						to_peer_id,
+						&offer_id,
+						&protocol_id,
+						&provided_offer.protocol_payload,
+					))
+				};
+
+			let (offer_snapshot_rowid, connection_rowid) =
+				create_service_connection(&mut database, offer_snapshot, from_peer_id);
+
+			drop(database);
+
+			// Mark the snapshot as saved in DB.
+			provided_offer.snapshot_rowid = Some(offer_snapshot_rowid);
+
+			let mut provider = state.provider.lock().await;
+
+			let module = match provider.modules.get_mut(&provided_offer.provider_id) {
+				Some(x) => x,
+				None => {
+					return Err(eyre!(
+						"Provider module \"{}\" not found",
+						provided_offer.provider_id
+					));
+				}
+			};
+
+			type OutboundRequestFrameData =
+				server::provider::rpc::OutboundRequestFrameData;
+
+			let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+			let envelope = ProviderOutboundRequestEnvelope {
+				frame_data: OutboundRequestFrameData::OpenConnection {
+					customer_peer_id: from_peer_id.to_base58(),
+					protocol_id,
+					offer_id,
+					protocol_payload: provided_offer.protocol_payload,
+					connection_id: connection_rowid,
+				},
+				response_tx,
+			};
+
+			module.outbound_request_tx.try_send(envelope).map_err(|e| {
+				eyre!(
+					"per_module_outbound_request_txs[\"{}\"].send failed: {:?}",
+					provided_offer.provider_id,
+					e
+				)
+			})?;
+
+			module
+				.future_service_connections
+				.lock()
+				.await
+				.insert(connection_rowid, stream.into_inner());
+
+			drop(provider);
+
+			log::debug!(
+				"Provider \"{}\" service connection {} is waiting for Yamux stream",
+				provided_offer.provider_id,
+				connection_rowid
+			);
+
+			match response_rx.await.map_err(|e| eyre!(e))? {
+				server::provider::rpc::InboundResponseFrameData::Ack => {}
+			}
+
+			Ok(())
 		}
 	}
 }

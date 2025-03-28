@@ -6,6 +6,8 @@ use crate::{
 	UserConfig, UserProviderConfig,
 	database::open_database,
 	dto::{OfferRemoved, OfferUpdated, ProviderHeartbeat, ProviderUpdated},
+	p2p::{OutboundReqResRequestEnvelope, OutboundStreamRequest},
+	server,
 	util::{ArcMutex, to_arc_mutex},
 };
 
@@ -19,7 +21,15 @@ const DEFAULT_DB_NAME: &str = "db.sqlite";
 const DEFAULT_KEYPAIR_FILE_NAME: &str = "keypair.bin";
 const DEFAULT_SERVER_PORT: u16 = 4269;
 
-pub type ProviderOffer = crate::p2p::proto::gossipsub::ProviderOffer;
+#[derive(Clone, Debug)]
+pub struct ProvidedOffer {
+	pub provider_id: String,
+
+	/// It may or may not be stored into DB yet.
+	pub snapshot_rowid: Option<i64>,
+
+	pub protocol_payload: serde_json::Value,
+}
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -66,12 +76,43 @@ pub struct ConsumerState {
 	pub notification_tx: tokio::sync::broadcast::Sender<ConsumerNotification>,
 }
 
+pub struct ProviderOutboundRequestEnvelope {
+	pub frame_data: server::provider::rpc::OutboundRequestFrameData,
+	pub response_tx: tokio::sync::oneshot::Sender<
+		server::provider::rpc::InboundResponseFrameData,
+	>,
+}
+
+pub struct ProviderModuleState {
+	/// Channel for outbound requests.
+	pub outbound_request_tx:
+		tokio::sync::mpsc::Sender<ProviderOutboundRequestEnvelope>,
+
+	/// ROWIDs of provider service connections waiting
+	/// for the module to open a Yamux stream for it.
+	pub future_service_connections: ArcMutex<HashMap<i64, libp2p::Stream>>,
+}
+
 pub struct ProviderState {
+	pub modules: HashMap<String, ProviderModuleState>,
+
 	/// A map of actual offers, defined by the connected provider modules
 	/// (`{ ProtocolId => { OfferId => Offer } }`).
-	pub actual_offers: HashMap<String, HashMap<String, ProviderOffer>>,
+	// REFACTOR: Move to `ProviderStateModule`.
+	pub offers: HashMap<String, HashMap<String, ProvidedOffer>>,
 
+	/// When the provider data has been last time updated at.
 	pub last_updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub struct P2pState {
+	/// Channel for outbound ReqRes requests.
+	#[allow(dead_code)]
+	pub reqres_request_tx:
+		tokio::sync::mpsc::Sender<OutboundReqResRequestEnvelope>,
+
+	/// Channel for outbound stream requests.
+	pub stream_request_tx: tokio::sync::mpsc::Sender<OutboundStreamRequest>,
 }
 
 pub struct SharedState {
@@ -80,12 +121,17 @@ pub struct SharedState {
 	pub consumer: ArcMutex<ConsumerState>,
 	pub provider: ArcMutex<ProviderState>,
 	pub database: ArcMutex<rusqlite::Connection>,
+	pub p2p: ArcMutex<P2pState>,
 }
 
 impl SharedState {
 	pub fn new(
 		user_config: &Option<UserConfig>,
 		shutdown_token: tokio_util::sync::CancellationToken,
+		p2p_reqres_request_tx: tokio::sync::mpsc::Sender<
+			OutboundReqResRequestEnvelope,
+		>,
+		p2p_stream_request_tx: tokio::sync::mpsc::Sender<OutboundStreamRequest>,
 	) -> eyre::Result<Self> {
 		let data_dir = match user_config.as_ref().and_then(|c| c.data_dir.clone()) {
 			Some(path) => path,
@@ -135,6 +181,11 @@ impl SharedState {
 			provider: provider_config,
 		};
 
+		let p2p_state = P2pState {
+			reqres_request_tx: p2p_reqres_request_tx,
+			stream_request_tx: p2p_stream_request_tx,
+		};
+
 		Ok(Self {
 			config,
 			shutdown_token,
@@ -144,11 +195,13 @@ impl SharedState {
 			}),
 
 			provider: to_arc_mutex(ProviderState {
-				actual_offers: (HashMap::new()),
-				last_updated_at: (chrono::Utc::now()),
+				modules: HashMap::new(),
+				offers: HashMap::new(),
+				last_updated_at: chrono::Utc::now(),
 			}),
 
 			database: to_arc_mutex(database),
+			p2p: to_arc_mutex(p2p_state),
 		})
 	}
 }

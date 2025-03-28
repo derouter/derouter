@@ -1,5 +1,5 @@
 use libp2p::PeerId;
-use rusqlite::{OptionalExtension, params, types::Null};
+use rusqlite::{OptionalExtension, params};
 
 use crate::{
 	dto::{OfferRemoved, OfferUpdated, ProviderHeartbeat, ProviderUpdated},
@@ -19,7 +19,7 @@ pub(super) async fn handle_heartbeat(
 	let mut updated_offers = Vec::<OfferUpdated>::new();
 	let mut removed_offers = Vec::<OfferRemoved>::new();
 
-	// FIXME: Try flattening the block.
+	// REFACTOR: Try flattening the block.
 	// See https://github.com/rust-lang/rust/issues/97331#issuecomment-2746121745.
 	{
 		let mut database = state.database.lock().await;
@@ -53,7 +53,7 @@ pub(super) async fn handle_heartbeat(
 			.unwrap();
 
 		#[derive(Debug)]
-		struct NewOfferSnapshot {
+		struct OfferSnapshotRow {
 			provider_peer_id: String,
 			protocol_id: String,
 			offer_id: String,
@@ -80,7 +80,7 @@ pub(super) async fn handle_heartbeat(
 				match provider_details.updated_at.cmp(&local_updated_at) {
 					std::cmp::Ordering::Less => {
 						return Err(eyre::eyre!(
-							"{:?}'s provider updated_at ({}) is less than stored value ({})",
+							"{:?}'s provider updated_at value {} is less than stored ({})",
 							source,
 							provider_details.updated_at,
 							local_updated_at
@@ -88,7 +88,7 @@ pub(super) async fn handle_heartbeat(
 					}
 
 					std::cmp::Ordering::Equal => {
-						log::debug!("Provider details not updated");
+						log::debug!("Provider not updated");
 
 						tx.execute(
 							r#"
@@ -108,13 +108,13 @@ pub(super) async fn handle_heartbeat(
 						.unwrap();
 
 						heartbeat_providers.push(ProviderHeartbeat {
-							peer_id: source,
+							peer_id: source.to_base58(),
 							latest_heartbeat_at: chrono::Utc::now(),
 						});
 					}
 
 					std::cmp::Ordering::Greater => {
-						log::debug!("Update provider details");
+						log::debug!("Provider details updated");
 
 						tx.execute(
 							r#"
@@ -143,19 +143,16 @@ pub(super) async fn handle_heartbeat(
 						.unwrap();
 
 						updated_providers.push(ProviderUpdated {
-							peer_id: source,
+							peer_id: source.to_base58(),
 							name: provider_details.name,
 							teaser: provider_details.teaser,
 							description: provider_details.description,
-
-							// FIXME: I'm not sure about this. Should it be our clock instead?
-							updated_at: provider_details.updated_at,
-
+							updated_at: chrono::Utc::now(),
 							latest_heartbeat_at: chrono::Utc::now(),
 						});
 
 						#[derive(Debug)]
-						struct ActiveOfferSnapshot {
+						struct ActiveOfferSnapshotRow {
 							rowid: i64,
 							protocol_id: String,
 							offer_id: String,
@@ -181,7 +178,7 @@ pub(super) async fn handle_heartbeat(
 
 						let active_offer_snapshots = statement
 							.query_map(params!(source.to_base58()), |row| {
-								Ok(ActiveOfferSnapshot {
+								Ok(ActiveOfferSnapshotRow {
 									rowid: row.get(0)?,
 									protocol_id: row.get(1)?,
 									offer_id: row.get(2)?,
@@ -201,12 +198,15 @@ pub(super) async fn handle_heartbeat(
 								.and_then(|map| map.get(offer_id));
 
 							if let Some(incoming_snapshot) = incoming_snapshot {
-								let incoming_payload =
+								let incoming_payload_string =
 									serde_json::to_string(&incoming_snapshot.protocol_payload)
 										.expect("should serialize offer payload");
 
-								if incoming_payload == active_snapshot.protocol_payload {
-									log::debug!("Offer snapshot did not change");
+								if incoming_payload_string == active_snapshot.protocol_payload {
+									log::debug!(
+										"Offer snapshot did not change: {:?}",
+										active_snapshot
+									);
 								} else {
 									log::debug!(
 										"Disable due to payload change: {:?}",
@@ -218,8 +218,7 @@ pub(super) async fn handle_heartbeat(
 											UPDATE
 												offer_snapshots
 											SET
-												active = 0,
-												updated_at = CURRENT_TIMESTAMP
+												active = 0
 											WHERE
 												ROWID = ?1
 										"#,
@@ -227,44 +226,54 @@ pub(super) async fn handle_heartbeat(
 									)
 									.unwrap();
 
-									let new_snapshot = NewOfferSnapshot {
+									let new_snapshot = OfferSnapshotRow {
 										provider_peer_id: source.to_base58(),
 										protocol_id: protocol_id.clone(),
 										offer_id: offer_id.clone(),
-										protocol_payload: incoming_payload,
+										protocol_payload: incoming_payload_string,
 									};
 
-									// OPTIMIZE: Reuse existing if available (it may be cleaned).
-									log::debug!("Insert {:?}", new_snapshot);
+									log::debug!("Upsert and enable {:?}", new_snapshot);
 
-									tx.execute(
-										r#"
-											INSERT INTO offer_snapshots (
-												provider_peer_id, -- ?1
-												protocol_id,      -- ?2
-												offer_id,         -- ?3
-												active,
-												protocol_payload  -- ?4
-											) VALUES (
-												?1, ?2, ?3, 1, ?4
-											)
+									let snapshot_rowid: i64 = tx
+										.query_row(
+											r#"
+												INSERT
+												INTO offer_snapshots (
+													provider_peer_id, -- ?1
+													protocol_id,      -- ?2
+													offer_id,         -- ?3
+													active,
+													protocol_payload -- ?4
+												)
+												VALUES (
+													?1, ?2, ?3, 1, ?4
+												)
+												ON CONFLICT (
+													provider_peer_id,
+													protocol_id,
+													offer_id,
+													protocol_payload
+												)
+												DO UPDATE SET active = 1
+												RETURNING
+													ROWID
 										"#,
-										params!(
-											new_snapshot.provider_peer_id, // ?1
-											new_snapshot.protocol_id,      // ?2
-											new_snapshot.offer_id,         // ?3
-											new_snapshot.protocol_payload  // ?4
-										),
-									)
-									.unwrap();
+											params!(
+												new_snapshot.provider_peer_id, // ?1
+												new_snapshot.protocol_id,      // ?2
+												new_snapshot.offer_id,         // ?3
+												new_snapshot.protocol_payload, // ?4
+											),
+											|row| row.get(0),
+										)
+										.unwrap();
 
 									updated_offers.push(OfferUpdated {
-										snapshot_id: tx.last_insert_rowid(),
-										provider_peer_id: source,
+										snapshot_id: snapshot_rowid,
+										provider_peer_id: source.to_base58(),
 										protocol_id: protocol_id.clone(),
 										offer_id: offer_id.clone(),
-
-										// OPTIMIZE: Avoid cloning.
 										protocol_payload: incoming_snapshot
 											.protocol_payload
 											.clone(),
@@ -278,8 +287,7 @@ pub(super) async fn handle_heartbeat(
                     UPDATE
                       offer_snapshots
                     SET
-                      active = 0,
-											updated_at = CURRENT_TIMESTAMP
+                      active = 0
                     WHERE
                       ROWID = ?1
                   "#,
@@ -315,7 +323,7 @@ pub(super) async fn handle_heartbeat(
 									.unwrap();
 
 								if existing_active_snapshot.is_none() {
-									let new_snapshot = NewOfferSnapshot {
+									let new_snapshot = OfferSnapshotRow {
 										provider_peer_id: source.to_base58(),
 										protocol_id: protocol_id.clone(),
 										offer_id: offer_id.clone(),
@@ -325,32 +333,40 @@ pub(super) async fn handle_heartbeat(
 										.expect("should serialize offer payload"),
 									};
 
-									log::debug!("Inserting {:?}", new_snapshot);
+									log::debug!("Upsert and enable {:?}", new_snapshot);
 
-									tx.execute(
-										r#"
-											INSERT INTO offer_snapshots (
-												provider_peer_id, -- ?1
-												protocol_id,      -- ?2
-												offer_id,         -- ?3
-												active,
-												protocol_payload  -- ?4
-											) VALUES (
-												?1, ?2, ?3, 1, ?4
-											)
-										"#,
-										params!(
-											new_snapshot.provider_peer_id, // ?1
-											new_snapshot.protocol_id,      // ?2
-											new_snapshot.offer_id,         // ?3
-											new_snapshot.protocol_payload, // ?4
-										),
-									)
-									.unwrap();
+									let snapshot_rowid: i64 = tx
+										.query_row(
+											r#"
+												INSERT
+												INTO offer_snapshots (
+													provider_peer_id, -- ?1
+													protocol_id,      -- ?2
+													offer_id,         -- ?3
+													active,
+													protocol_payload -- ?4
+												)
+												VALUES (
+													?1, ?2, ?3, 1, ?4
+												)
+												ON CONFLICT DO
+													UPDATE SET active = 1
+												RETURNING
+													ROWID
+											"#,
+											params!(
+												new_snapshot.provider_peer_id, // ?1
+												new_snapshot.protocol_id,      // ?2
+												new_snapshot.offer_id,         // ?3
+												new_snapshot.protocol_payload, // ?4
+											),
+											|row| row.get(0),
+										)
+										.unwrap();
 
 									updated_offers.push(OfferUpdated {
-										snapshot_id: tx.last_insert_rowid(),
-										provider_peer_id: source,
+										snapshot_id: snapshot_rowid,
+										provider_peer_id: source.to_base58(),
 										offer_id,
 										protocol_id: protocol_id.clone(),
 										protocol_payload: incoming_offer.protocol_payload,
@@ -361,79 +377,40 @@ pub(super) async fn handle_heartbeat(
 					}
 				}
 			} else {
-				log::debug!("Heartbeat has no provider details, clear peer record");
-
-				tx.execute(
-					r#"
-						UPDATE
-							peers
-						SET
-							provider_name = ?2,
-							provider_teaser = ?3,
-							provider_description = ?4,
-							their_provider_updated_at = ?5,
-							our_provider_updated_at = ?6,
-							their_latest_heartbeat_timestamp = ?7,
-							our_latest_heartbeat_timestamp = ?8
-						WHERE
-							peer_id = ?1
-					"#,
-					params!(
-						source.to_base58(),
-						Null,
-						Null,
-						Null,
-						Null,
-						Null,
-						heartbeat.timestamp,
-						chrono::Utc::now(),
-					),
-				)
-				.unwrap();
-
-				updated_providers.push(ProviderUpdated {
-					peer_id: source,
-					name: None,
-					teaser: None,
-					description: None,
-					updated_at: chrono::Utc::now(), // FIXME: ?
-					latest_heartbeat_at: chrono::Utc::now(),
-				});
+				log::debug!("Ignoring hearbeat without provider data");
 			}
 		} else if let Some(provider_details) = heartbeat.provider {
-			log::debug!("Insert new peer with provider");
+			log::debug!("Insert new provider peer");
 
 			tx.execute(
 				r#"
 					INSERT INTO peers (
-						peer_id, -- ?1
-						provider_name, -- ?2
-						provider_teaser, -- ?3
-						provider_description, -- ?4
+						peer_id,                   -- ?1
+						provider_name,             -- ?2
+						provider_teaser,           -- ?3
+						provider_description,      -- ?4
 						their_provider_updated_at, -- ?5
-						our_provider_updated_at, -- ?6
-						their_latest_heartbeat_timestamp, -- ?7
-						our_latest_heartbeat_timestamp -- ?8
+						our_provider_updated_at,
+						their_latest_heartbeat_timestamp, -- ?6
+						our_latest_heartbeat_timestamp
 					) VALUES (
-						?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+						?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, ?6, CURRENT_TIMESTAMP
 					)
 				"#,
 				params!(
-					source.to_base58(),
-					provider_details.name,
-					provider_details.teaser,
-					provider_details.description,
-					provider_details.updated_at,
-					chrono::Utc::now(),
-					heartbeat.timestamp,
-					chrono::Utc::now(),
+					source.to_base58(),           // ?1
+					provider_details.name,        // ?2
+					provider_details.teaser,      // ?3
+					provider_details.description, // ?4
+					provider_details.updated_at,  // ?5
+					heartbeat.timestamp,          // ?6
 				),
 			)
 			.unwrap();
 
 			for (protocol_id, offers_by_protocol) in provider_details.offers {
 				for (offer_id, offer) in offers_by_protocol {
-					let new_snapshot = NewOfferSnapshot {
+					let new_snapshot = OfferSnapshotRow {
 						provider_peer_id: source.to_base58(),
 						protocol_id: protocol_id.clone(),
 						offer_id: offer_id.clone(),
@@ -450,7 +427,7 @@ pub(super) async fn handle_heartbeat(
 								protocol_id,      -- ?2
 								offer_id,         -- ?3
 								active,
-								protocol_payload  -- ?4
+								protocol_payload -- ?4
 							) VALUES (
 								?1, ?2, ?3, 1, ?4
 							)
@@ -459,14 +436,14 @@ pub(super) async fn handle_heartbeat(
 							new_snapshot.provider_peer_id, // ?1
 							new_snapshot.protocol_id,      // ?2
 							new_snapshot.offer_id,         // ?3
-							new_snapshot.protocol_payload  // ?4
+							new_snapshot.protocol_payload, // ?4
 						),
 					)
 					.unwrap();
 
 					updated_offers.push(OfferUpdated {
 						snapshot_id: tx.last_insert_rowid(),
-						provider_peer_id: source,
+						provider_peer_id: source.to_base58(),
 						offer_id,
 						protocol_id: protocol_id.clone(),
 						protocol_payload: offer.protocol_payload,
@@ -474,21 +451,7 @@ pub(super) async fn handle_heartbeat(
 				}
 			}
 		} else {
-			log::debug!("Insert new peer without provider");
-
-			tx.execute(
-				r#"
-					INSERT INTO peers (
-						peer_id, -- ?1
-						their_latest_heartbeat_timestamp, -- ?2
-						our_latest_heartbeat_timestamp -- ?3
-					) VALUES (
-						?1, ?2, ?3
-					)
-				"#,
-				params!(source.to_base58(), heartbeat.timestamp, chrono::Utc::now(),),
-			)
-			.unwrap();
+			log::debug!("Ignoring hearbeat without provider data");
 		}
 
 		tx.commit().unwrap();

@@ -6,9 +6,6 @@ CREATE TABLE
     provider_teaser TEXT,
     provider_description TEXT,
     --
-    -- When the peer was discovered for the first time, in our clock.
-    discovered_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    --
     -- When the provider details were last updated, in their clock.
     their_provider_updated_at TIMESTAMP,
     --

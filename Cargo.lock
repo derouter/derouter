@@ -706,6 +706,7 @@ dependencies = [
  "chrono",
  "clap",
  "directories",
+ "either",
  "eyre",
  "flexi_logger",
  "futures",

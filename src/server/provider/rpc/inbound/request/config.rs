@@ -10,5 +10,6 @@ pub struct ProviderOffer {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ProviderConfig {
+	pub provider_id: String,
 	pub offers: HashMap<String, ProviderOffer>,
 }

@@ -7,8 +7,8 @@ use tokio::{
 
 use crate::state::SharedState;
 
-mod consumer;
-mod provider;
+pub mod consumer;
+pub mod provider;
 
 async fn handle_connection(
 	mut stream: TcpStream,
@@ -50,6 +50,7 @@ pub async fn run_server(state: Arc<SharedState>) -> eyre::Result<()> {
 			Ok((stream, addr)) = listener.accept() => {
 				log::debug!("Got new TCP connection from {}", addr);
 
+				// FIXME: When connection panics.
 				connections.spawn(handle_connection(
 					stream,
 					addr,

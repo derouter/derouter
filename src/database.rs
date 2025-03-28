@@ -1,9 +1,15 @@
-use std::{path::Path, str::FromStr, sync::LazyLock};
+use std::{path::Path, rc::Rc, sync::LazyLock};
 
+use cleanup::cleanup;
 use include_dir::{Dir, include_dir};
+use rusqlite::types::Value;
 use rusqlite_migration::Migrations;
 
 use crate::dto::{OfferUpdated, ProviderUpdated};
+pub use create_service_connection::create_service_connection;
+
+mod cleanup;
+pub mod create_service_connection;
 
 static DB_MIGRATIONS_DIR: Dir =
 	include_dir!("$CARGO_MANIFEST_DIR/db/migrations");
@@ -15,7 +21,9 @@ pub fn open_database(path: &Path) -> eyre::Result<rusqlite::Connection> {
 	log::debug!("Opening SQLite connection at {}", path.display());
 
 	let mut conn = rusqlite::Connection::open(path)?;
+	rusqlite::vtab::array::load_module(&conn)?;
 	DB_MIGRATIONS.to_latest(&mut conn)?;
+	cleanup(&conn, true);
 
 	Ok(conn)
 }
@@ -25,7 +33,8 @@ fn db_migrations_test() {
 	DB_MIGRATIONS.validate().unwrap();
 }
 
-pub fn fetch_providers(
+/// Return providers with heartbeat not older than 60 seconds.
+pub fn fetch_active_providers(
 	database: &rusqlite::Connection,
 ) -> Vec<ProviderUpdated> {
 	let mut stmt = database
@@ -42,7 +51,7 @@ pub fn fetch_providers(
 					peers
 				WHERE
 					our_provider_updated_at IS NOT NULL AND
-					our_latest_heartbeat_timestamp >= datetime('now', '-30 seconds')
+					our_latest_heartbeat_timestamp >= datetime('now', '-60 seconds')
 			"#,
 		)
 		.unwrap();
@@ -50,8 +59,7 @@ pub fn fetch_providers(
 	let providers = stmt
 		.query_map([], |row| {
 			Ok(ProviderUpdated {
-				peer_id: libp2p::PeerId::from_str(row.get_ref(0)?.as_str().unwrap())
-					.unwrap(),
+				peer_id: row.get(0)?,
 				name: row.get(1)?,
 				teaser: row.get(2)?,
 				description: row.get(3)?,
@@ -64,7 +72,12 @@ pub fn fetch_providers(
 	providers.map(|p| p.unwrap()).collect()
 }
 
-pub fn fetch_offers(database: &rusqlite::Connection) -> Vec<OfferUpdated> {
+/// Return active offers by these providers.
+pub fn fetch_offers(
+	database: &rusqlite::Connection,
+	provider_peer_ids: &[String],
+) -> Vec<OfferUpdated> {
+	// See https://github.com/rusqlite/rusqlite/issues/345#issuecomment-1694194547.
 	let mut statement = database
 		.prepare_cached(
 			r#"
@@ -73,23 +86,29 @@ pub fn fetch_offers(database: &rusqlite::Connection) -> Vec<OfferUpdated> {
 					provider_peer_id, -- 1
 					protocol_id,      -- 2
 					offer_id,         -- 3
-					protocol_payload, -- 4
+					protocol_payload  -- 4
 				FROM
 					offer_snapshots
 				WHERE
+					provider_peer_id IN rarray(?1) AND
 					active = 1
 			"#,
 		)
 		.unwrap();
 
+	// See https://docs.rs/rusqlite/latest/rusqlite/vtab/array/index.html.
+	let provider_ids_param = Rc::new(
+		provider_peer_ids
+			.iter()
+			.map(|p| Value::Text(p.to_string()))
+			.collect::<Vec<_>>(),
+	);
+
 	let offer_snapshots = statement
-		.query_map([], |row| {
+		.query_map([provider_ids_param], |row| {
 			Ok(OfferUpdated {
 				snapshot_id: row.get(0)?,
-				provider_peer_id: libp2p::PeerId::from_str(
-					row.get_ref(1)?.as_str().unwrap(),
-				)
-				.unwrap(),
+				provider_peer_id: row.get(1)?,
 				protocol_id: row.get(2)?,
 				offer_id: row.get(3)?,
 				protocol_payload: serde_json::from_str(

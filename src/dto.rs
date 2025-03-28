@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProviderHeartbeat {
-	pub peer_id: libp2p::PeerId,
+	pub peer_id: String,
 
 	/// The heartbeat's timestamp in our clock.
 	#[serde(with = "chrono::serde::ts_seconds")]
@@ -11,7 +11,7 @@ pub struct ProviderHeartbeat {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProviderUpdated {
-	pub peer_id: libp2p::PeerId,
+	pub peer_id: String,
 
 	pub name: Option<String>,
 	pub teaser: Option<String>,
@@ -32,7 +32,7 @@ pub struct OfferUpdated {
 	/// Offer snapshot ID, unique per database.
 	pub snapshot_id: i64,
 
-	pub provider_peer_id: libp2p::PeerId,
+	pub provider_peer_id: String,
 	pub protocol_id: String,
 	pub offer_id: String,
 	pub protocol_payload: serde_json::Value,

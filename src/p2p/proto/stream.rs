@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::database::service_connections::Currency;
+
 /// Written immediately to an outbound stream.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum HeadRequest {
@@ -7,6 +9,7 @@ pub enum HeadRequest {
 		protocol_id: String,
 		offer_id: String,
 		protocol_payload: String,
+		currency: Currency,
 	},
 }
 

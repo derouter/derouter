@@ -106,6 +106,9 @@ pub struct ProviderState {
 }
 
 pub struct P2pState {
+	/// Set when P2P is running.
+	keypair: Option<libp2p::identity::Keypair>,
+
 	/// Channel for outbound ReqRes requests.
 	#[allow(dead_code)]
 	pub reqres_request_tx:
@@ -113,6 +116,23 @@ pub struct P2pState {
 
 	/// Channel for outbound stream requests.
 	pub stream_request_tx: tokio::sync::mpsc::Sender<OutboundStreamRequest>,
+}
+
+impl P2pState {
+	pub fn set_keypair(&mut self, keypair: libp2p::identity::Keypair) {
+		self.keypair = Some(keypair);
+	}
+
+	pub fn sign(
+		&self,
+		msg: &[u8],
+	) -> Option<Result<Vec<u8>, libp2p::identity::SigningError>> {
+		self.keypair.as_ref().map(|k| k.sign(msg))
+	}
+
+	pub fn public_key(&self) -> Option<libp2p::identity::PublicKey> {
+		self.keypair.as_ref().map(|k| k.public())
+	}
 }
 
 pub struct SharedState {
@@ -182,6 +202,7 @@ impl SharedState {
 		};
 
 		let p2p_state = P2pState {
+			keypair: None,
 			reqres_request_tx: p2p_reqres_request_tx,
 			stream_request_tx: p2p_stream_request_tx,
 		};

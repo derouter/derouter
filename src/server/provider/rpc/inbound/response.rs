@@ -1,12 +1,12 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Deserialize, Debug)]
 #[serde(tag = "type", content = "data")]
 pub enum InboundResponseFrameData {
 	Ack,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Deserialize, Debug)]
 pub struct InboundResponseFrame {
 	/// The `OutboundRequestFrame.id` this response is for.
 	pub id: u32,

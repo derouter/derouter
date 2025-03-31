@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 pub mod request;
 pub mod response;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Deserialize, Debug)]
 #[serde(tag = "kind")]
 pub enum InboundFrame {
 	Request(request::InboundRequestFrame),

@@ -1,5 +1,33 @@
 use either::Either;
 use rusqlite::params;
+use serde_repr::{Deserialize_repr, Serialize_repr};
+
+/// Currency set for a connection.
+#[derive(Serialize_repr, Deserialize_repr, Debug, Clone, Copy)]
+#[repr(i64)]
+pub enum Currency {
+	/// Native Polygon token ($POL).
+	Polygon = 0,
+}
+
+impl TryFrom<i64> for Currency {
+	type Error = &'static str;
+
+	fn try_from(value: i64) -> Result<Self, Self::Error> {
+		match value {
+			0 => Ok(Currency::Polygon),
+			_ => Err("Invalid value for Currency"),
+		}
+	}
+}
+
+impl Currency {
+	pub fn code(self) -> &'static str {
+		match self {
+			Currency::Polygon => "POL",
+		}
+	}
+}
 
 /// `offer_snapshot` may be either an existing offer snapshot rowid
 /// (panics if it doesn't actually exist), or a new snapshot tuple
@@ -18,6 +46,7 @@ pub fn create_service_connection(
 		),
 	>,
 	consumer_peer_id: libp2p::PeerId,
+	currency: Currency,
 ) -> (i64, i64) {
 	let tx = database.transaction().unwrap();
 
@@ -138,9 +167,10 @@ pub fn create_service_connection(
 					INSERT
 					INTO service_connections (
 						offer_snapshot_rowid, -- ?1
-						consumer_peer_id      -- ?2
+						consumer_peer_id,     -- ?2
+						currency              -- ?3
 					) VALUES (
-						?1, ?2
+						?1, ?2, ?3
 					)
 				"#,
 			)
@@ -156,7 +186,8 @@ pub fn create_service_connection(
 		insert_service_connection_stmt
 			.execute(params!(
 				service_connection_row.offer_snapshot_rowid,
-				service_connection_row.consumer_peer_id
+				service_connection_row.consumer_peer_id,
+				currency as i64
 			))
 			.unwrap();
 

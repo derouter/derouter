@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct ProviderHeartbeat {
 	pub peer_id: String,
 
@@ -9,7 +9,7 @@ pub struct ProviderHeartbeat {
 	pub latest_heartbeat_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct ProviderUpdated {
 	pub peer_id: String,
 
@@ -27,7 +27,7 @@ pub struct ProviderUpdated {
 }
 
 /// This offer has been updated with a new snapshot.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct OfferUpdated {
 	/// Offer snapshot ID, unique per database.
 	pub snapshot_id: i64,
@@ -39,7 +39,7 @@ pub struct OfferUpdated {
 }
 
 /// This offer is not available anymore.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct OfferRemoved {
 	pub snapshot_id: i64,
 }

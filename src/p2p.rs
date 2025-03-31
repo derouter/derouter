@@ -15,16 +15,25 @@ use libp2p::{
 	PeerId, Stream, StreamProtocol, Swarm, SwarmBuilder, gossipsub,
 	identity::Keypair,
 	mdns, noise, ping,
-	request_response::{self, OutboundRequestId},
+	request_response::{
+		self, InboundRequestId, OutboundRequestId, ResponseChannel,
+	},
 	swarm::{self, SwarmEvent},
 	tcp, yamux,
 };
 use libp2p_stream::{Control, OpenStreamError};
+use proto::request_response::ConfirmJobCompletionResponse;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use unwrap_none::UnwrapNone;
 
 use crate::{
-	database::create_service_connection,
+	database::{
+		create_service_connection,
+		service_jobs::{
+			provider::confirm::provider_confirm_job,
+			set_confirmation_error::set_job_confirmation_error,
+		},
+	},
 	server,
 	state::{ProviderOutboundRequestEnvelope, SharedState},
 	util::cbor::{read_cbor, write_cbor},
@@ -170,6 +179,7 @@ pub async fn run_p2p(
 		.gossipsub
 		.subscribe(&heartbeat_topic)?;
 
+	state.p2p.lock().await.set_keypair(keypair);
 	log::info!("📡 Running w/ PeerID {}", swarm.local_peer_id());
 
 	let mut response_tx_map = HashMap::<
@@ -337,7 +347,7 @@ async fn try_send_heartbeat<T: Into<gossipsub::TopicHash>>(
 }
 
 async fn handle_event<T: Into<gossipsub::TopicHash>>(
-	state: &SharedState,
+	state: &Arc<SharedState>,
 	swarm: &mut Swarm<NodeBehaviour>,
 	event: SwarmEvent<NodeBehaviourEvent>,
 	heartbeat_topic: T,
@@ -377,18 +387,29 @@ async fn handle_event<T: Into<gossipsub::TopicHash>>(
 						connection_id,
 						message,
 					} => match message {
-						request_response::Message::Request { .. } => todo!(),
+						request_response::Message::Request {
+							request_id,
+							request,
+							channel,
+						} => {
+							handle_incoming_request(
+								state,
+								swarm,
+								*swarm.local_peer_id(),
+								peer,
+								request_id,
+								request,
+								channel,
+							)
+							.await;
+						}
 
 						request_response::Message::Response {
 							request_id,
 							response,
 						} => {
 							log::debug!(
-								"ReqRes Response {{
-									peer: {peer},
-									connection_id: {connection_id},
-									request_id: {request_id},
-									response: {:?} }}",
+								"ReqRes Response {{ peer: {peer}, connection_id: {connection_id}, request_id: {request_id}, response: {:?} }}",
 								response
 							);
 
@@ -593,6 +614,7 @@ async fn handle_incoming_stream(
 			protocol_id,
 			offer_id,
 			protocol_payload,
+			currency,
 		} => {
 			log::debug!("Locking provider...");
 			let provider = state.provider.lock().await;
@@ -657,8 +679,12 @@ async fn handle_incoming_stream(
 					))
 				};
 
-			let (offer_snapshot_rowid, connection_rowid) =
-				create_service_connection(&mut database, offer_snapshot, from_peer_id);
+			let (offer_snapshot_rowid, connection_rowid) = create_service_connection(
+				&mut database,
+				offer_snapshot,
+				from_peer_id,
+				currency,
+			);
 
 			drop(database);
 
@@ -720,6 +746,130 @@ async fn handle_incoming_stream(
 			}
 
 			Ok(())
+		}
+	}
+}
+
+async fn handle_incoming_request(
+	state: &Arc<SharedState>,
+	swarm: &mut Swarm<NodeBehaviour>,
+	our_peer_id: PeerId,
+	from_peer_id: PeerId,
+	_request_id: InboundRequestId,
+	request: proto::request_response::Request,
+	channel: ResponseChannel<proto::request_response::Response>,
+) {
+	type Request = proto::request_response::Request;
+
+	match request {
+		Request::ConfirmJobCompletion {
+			provider_job_id,
+			job_hash,
+			consumer_public_key,
+			consumer_signature,
+		} => {
+			type ProviderConfirmJobResult =
+				crate::database::service_jobs::provider::confirm::ProviderConfirmJobResult;
+
+			let response = match provider_confirm_job(
+				&mut *state.database.lock().await,
+				&from_peer_id,
+				&our_peer_id,
+				&provider_job_id,
+				&job_hash,
+				&consumer_public_key,
+				&consumer_signature,
+			) {
+				ProviderConfirmJobResult::Ok => ConfirmJobCompletionResponse::Ok,
+
+				ProviderConfirmJobResult::JobNotFound => {
+					ConfirmJobCompletionResponse::JobNotFound
+				}
+
+				ProviderConfirmJobResult::ConsumerPeerIdMismatch => {
+					ConfirmJobCompletionResponse::JobNotFound
+				}
+
+				ProviderConfirmJobResult::AlreadyConfirmed => {
+					ConfirmJobCompletionResponse::AlreadyConfirmed
+				}
+
+				ProviderConfirmJobResult::AlreadyFailed => {
+					ConfirmJobCompletionResponse::AlreadyFailed
+				}
+
+				ProviderConfirmJobResult::NotCompletedYet => {
+					ConfirmJobCompletionResponse::NotCompletedYet
+				}
+
+				ProviderConfirmJobResult::PublicKeyDecodingFailed(e) => {
+					log::debug!("Consumer public key {:?}", e);
+					ConfirmJobCompletionResponse::PublicKeyDecodingFailed
+				}
+
+				result => {
+					let (job_rowid, confirmation_error, response) = match result {
+						ProviderConfirmJobResult::HashMismatch {
+							job_rowid,
+							expected_hash,
+						} => (
+							job_rowid,
+							format!(
+								"Hash mismatch (got {}, expected {})",
+								hex::encode(&job_hash),
+								hex::encode(&expected_hash)
+							),
+							ConfirmJobCompletionResponse::HashMismatch {
+								expected: expected_hash,
+							},
+						),
+
+						ProviderConfirmJobResult::SignatureVerificationFailed {
+							job_rowid,
+						} => (
+							job_rowid,
+							"Signature verification failed".to_string(),
+							ConfirmJobCompletionResponse::SignatureVerificationFailed,
+						),
+
+						_ => unreachable!(),
+					};
+
+					type SetJobConfirmationErrorResult = crate::database::service_jobs::set_confirmation_error::SetJobConfirmationErrorResult;
+
+					match set_job_confirmation_error(
+						&mut *state.database.lock().await,
+						job_rowid,
+						&confirmation_error,
+					) {
+						SetJobConfirmationErrorResult::Ok => {}
+
+						SetJobConfirmationErrorResult::InvalidJobId => {
+							unreachable!("Job ID must be valid at this point")
+						}
+
+						SetJobConfirmationErrorResult::AlreadyConfirmed => {
+							// We're still returning a errornous response.
+							log::warn!(
+								"😮 Service job #{} was confirmed during setting confirmation error",
+								job_rowid
+							);
+						}
+					}
+
+					response
+				}
+			};
+
+			match swarm.behaviour_mut().request_response.send_response(
+				channel,
+				proto::request_response::Response::ConfirmJobCompletion(response),
+			) {
+				Ok(_) => {}
+				Err(response) => {
+					log::warn!("Failed to send {:?}", response)
+				}
+			}
 		}
 	}
 }

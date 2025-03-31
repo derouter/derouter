@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 /// Ask the provider to open a service connection.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Debug)]
 #[serde(tag = "type", content = "data")]
 pub enum OutboundRequestFrameData {
 	OpenConnection {
@@ -13,7 +13,7 @@ pub enum OutboundRequestFrameData {
 	},
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Debug)]
 pub struct OutboundRequestFrame {
 	/// Incremented on our side.
 	pub id: u32,

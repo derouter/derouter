@@ -3,6 +3,7 @@ use std::{
 };
 
 use either::Either::Left;
+use futures::executor::block_on;
 use rpc::{
 	inbound::{
 		InboundFrame,
@@ -15,7 +16,10 @@ use rpc::{
 		request::{OutboundRequestFrame, OutboundRequestFrameData},
 		response::{
 			OutboundResponseFrame, OutboundResponseFrameData,
-			config::ConsumerConfigResponse, open_connection::OpenConnectionResponse,
+			complete_job::CompleteJobResponse, config::ConsumerConfigResponse,
+			confirm_job_completion::ConfirmJobCompletionResponse,
+			create_job::CreateJobResponse, fail_job::FailJobResponse,
+			open_connection::OpenConnectionResponse, sync_job::SyncJobResponse,
 		},
 	},
 };
@@ -28,8 +32,20 @@ use tokio::{
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use crate::{
-	database::{create_service_connection, fetch_active_providers, fetch_offers},
-	p2p::{self, OutboundStreamRequestResult},
+	database::{
+		fetch_active_providers, fetch_offers,
+		service_connections::{self, Currency},
+		service_jobs::{
+			consumer::{
+				complete::consumer_complete_job, confirm::consumer_confirm_job,
+				create::consumer_create_job,
+				get_unconfirmed::consumer_get_unconfirmed_job, sync::consumer_sync_job,
+			},
+			fail::fail_job,
+			set_confirmation_error::set_job_confirmation_error,
+		},
+	},
+	p2p::{self, OutboundReqResRequestEnvelope, OutboundStreamRequestResult},
 	state::{ConsumerNotification, SharedState},
 	util::{
 		self, ArcMutex,
@@ -307,10 +323,10 @@ async fn handle_request(
 	request: InboundRequestFrame,
 	future_connections: &ArcMutex<HashMap<i64, libp2p::Stream>>,
 ) {
+	log::debug!("⬅️ {:?}", request.data);
+
 	match request.data {
 		InboundRequestFrameData::Config(data) => {
-			log::debug!("⬅️ {:?}", data);
-
 			if config.is_some() {
 				log::warn!("Already set config, ignoring");
 				return;
@@ -340,15 +356,260 @@ async fn handle_request(
 			outbound_tx.send(outbound_frame).await.unwrap();
 		}
 
-		InboundRequestFrameData::OpenConnection(data) => {
+		InboundRequestFrameData::OpenConnection {
+			offer_snapshot_id,
+			currency,
+		} => {
 			handle_open_connection_request(
 				state,
 				outbound_tx,
 				request.id,
-				data,
+				offer_snapshot_id,
+				currency,
 				future_connections.clone(),
 			)
 			.await;
+		}
+
+		InboundRequestFrameData::CreateJob {
+			connection_id,
+			private_payload,
+		} => {
+			type ConsumerCreateJobError =
+				crate::database::service_jobs::consumer::create::ConsumerCreateJobError;
+
+			let response = match consumer_create_job(
+				&mut *state.database.lock().await,
+				connection_id,
+				private_payload,
+			) {
+				Ok(job_id) => CreateJobResponse::Ok {
+					database_job_id: job_id,
+				},
+
+				Err(ConsumerCreateJobError::ConnectionNotFound) => {
+					CreateJobResponse::ConnectionNotFound
+				}
+			};
+
+			let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
+				id: request.id,
+				data: OutboundResponseFrameData::CreateJob(response),
+			});
+
+			let _ = outbound_tx.send(outbound_frame).await;
+		}
+
+		InboundRequestFrameData::SyncJob {
+			database_job_id,
+			provider_job_id,
+			private_payload,
+			created_at_sync,
+		} => {
+			type Result =
+				crate::database::service_jobs::consumer::sync::ConsumerUpdateJobResult;
+
+			let response = match consumer_sync_job(
+				&mut *state.database.lock().await,
+				database_job_id,
+				provider_job_id,
+				private_payload,
+				created_at_sync,
+			) {
+				Result::Ok => SyncJobResponse::Ok,
+				Result::InvalidJobId => SyncJobResponse::InvalidJobId,
+				Result::AlreadySynced => SyncJobResponse::AlreadySynced,
+				Result::ProviderJobIdUniqueness => {
+					SyncJobResponse::ProviderJobIdUniqueness
+				}
+			};
+
+			let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
+				id: request.id,
+				data: OutboundResponseFrameData::SyncJob(response),
+			});
+
+			let _ = outbound_tx.send(outbound_frame).await;
+		}
+
+		InboundRequestFrameData::CompleteJob {
+			database_job_id,
+			completed_at_sync,
+			balance_delta,
+			public_payload,
+			private_payload,
+		} => {
+			type ConsumerCompleteJobResult = crate::database::service_jobs::consumer::complete::ConsumerCompleteJobResult;
+
+			let p2p_lock = state.p2p.lock().await;
+			let public_key = p2p_lock.public_key();
+			drop(p2p_lock);
+
+			let response = {
+				match public_key {
+					Some(public_key) => {
+						match consumer_complete_job(
+							&mut *state.database.lock().await,
+							public_key.to_peer_id().to_base58(),
+							database_job_id,
+							balance_delta,
+							public_payload,
+							private_payload,
+							completed_at_sync,
+							|job_hash| {
+								// ADHOC: Functions w/ `rusqlite::Connection` may not be `async`.
+								block_on(async {
+									state
+										.p2p
+										.lock()
+										.await
+										.sign(job_hash)
+										.expect("should be running P2P at this point")
+										.unwrap()
+								})
+							},
+						)
+						.await
+						{
+							ConsumerCompleteJobResult::Ok => CompleteJobResponse::Ok,
+
+							ConsumerCompleteJobResult::InvalidJobId => {
+								CompleteJobResponse::InvalidJobId
+							}
+
+							ConsumerCompleteJobResult::ConsumerPeerIdMismatch => {
+								CompleteJobResponse::InvalidConsumerPeerId {
+									message: "Local peer ID doesn't match the job's".to_string(),
+								}
+							}
+
+							ConsumerCompleteJobResult::NotSyncedYet => {
+								CompleteJobResponse::NotSyncedYet
+							}
+
+							ConsumerCompleteJobResult::AlreadyCompleted => {
+								CompleteJobResponse::AlreadyCompleted
+							}
+
+							ConsumerCompleteJobResult::InvalidBalanceDelta { message } => {
+								CompleteJobResponse::InvalidBalanceDelta { message }
+							}
+						}
+					}
+
+					None => CompleteJobResponse::InvalidConsumerPeerId {
+						message: "P2P node is not running".to_string(),
+					},
+				}
+			};
+
+			let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
+				id: request.id,
+				data: OutboundResponseFrameData::CompleteJob(response),
+			});
+
+			let _ = outbound_tx.send(outbound_frame).await;
+		}
+
+		InboundRequestFrameData::ConfirmJobCompletion { database_job_id } => {
+			type ConsumerGetCompletedJobResult = crate::database::service_jobs::consumer::get_unconfirmed::ConsumerGetCompletedJobResult;
+
+			let response = match consumer_get_unconfirmed_job(
+				&mut *state.database.lock().await,
+				database_job_id,
+			) {
+				ConsumerGetCompletedJobResult::Ok {
+					provider_peer_id,
+					consumer_peer_id,
+					provider_job_id,
+					job_hash,
+					consumer_signature,
+				} => match state.p2p.lock().await.public_key() {
+					Some(public_key) => {
+						if consumer_peer_id != public_key.to_peer_id() {
+							Some(ConfirmJobCompletionResponse::InvalidConsumerPeerId {
+								message: "Local peer ID doesn't match the job's".to_string(),
+							})
+						} else {
+							// We need to send a P2P message, which may take some time.
+							// Therefore, we do it in background.
+							//
+
+							let future = p2p_confirm_job_completion(
+								state.clone(),
+								request.id,
+								outbound_tx.clone(),
+								database_job_id,
+								provider_peer_id,
+								public_key,
+								provider_job_id,
+								job_hash,
+								consumer_signature,
+							);
+
+							tokio::spawn(future);
+
+							None
+						}
+					}
+
+					None => todo!(),
+				},
+
+				ConsumerGetCompletedJobResult::InvalidJobId => {
+					Some(ConfirmJobCompletionResponse::InvalidJobId)
+				}
+
+				ConsumerGetCompletedJobResult::NotCompletedYet => {
+					Some(ConfirmJobCompletionResponse::NotCompletedYet)
+				}
+
+				ConsumerGetCompletedJobResult::AlreadyFailed => {
+					Some(ConfirmJobCompletionResponse::AlreadyFailed)
+				}
+
+				ConsumerGetCompletedJobResult::AlreadyConfirmed => {
+					Some(ConfirmJobCompletionResponse::AlreadyConfirmed)
+				}
+			};
+
+			if let Some(response) = response {
+				let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
+					id: request.id,
+					data: OutboundResponseFrameData::ConfirmJobCompletion(response),
+				});
+
+				let _ = outbound_tx.send(outbound_frame).await;
+			}
+		}
+
+		InboundRequestFrameData::FailJob {
+			database_job_id,
+			reason,
+			reason_class,
+			private_payload,
+		} => {
+			type Error = crate::database::service_jobs::fail::FailJobError;
+
+			let response = match fail_job(
+				&mut *state.database.lock().await,
+				database_job_id,
+				reason,
+				reason_class,
+				private_payload,
+			) {
+				Ok(_) => FailJobResponse::Ok,
+				Err(Error::InvalidJobId) => FailJobResponse::InvalidJobId,
+				Err(Error::AlreadyCompleted) => FailJobResponse::AlreadyCompleted,
+				Err(Error::AlreadyFailed) => FailJobResponse::AlreadyFailed,
+			};
+
+			let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
+				id: request.id,
+				data: OutboundResponseFrameData::FailJob(response),
+			});
+
+			let _ = outbound_tx.send(outbound_frame).await;
 		}
 	}
 }
@@ -357,7 +618,8 @@ async fn handle_open_connection_request(
 	state: &Arc<SharedState>,
 	outbound_tx: &tokio::sync::mpsc::Sender<OutboundFrame>,
 	request_id: u32,
-	data: rpc::inbound::request::open_connection::OpenConnection,
+	offer_snapshot_id: i64,
+	currency: Currency,
 	future_connections: ArcMutex<HashMap<i64, libp2p::Stream>>,
 ) {
 	let database_lock = state.database.lock().await;
@@ -370,6 +632,7 @@ async fn handle_open_connection_request(
 		protocol_payload: String,
 	}
 
+	// REFACTOR: Move to the database mod.
 	let offer_snapshot = database_lock
 		.query_row(
 			r#"
@@ -384,7 +647,7 @@ async fn handle_open_connection_request(
 					ROWID = ?1 AND
 					active = 1
 			"#,
-			[data.offer_snapshot_id],
+			[offer_snapshot_id],
 			|row| {
 				Ok(OfferSnapshot {
 					provider_peer_id: libp2p::PeerId::from_str(
@@ -421,6 +684,7 @@ async fn handle_open_connection_request(
 						protocol_id: offer_snapshot.protocol_id,
 						offer_id: offer_snapshot.offer_id,
 						protocol_payload: offer_snapshot.protocol_payload,
+						currency,
 					},
 					result_tx: p2p_stream_tx,
 				})
@@ -450,11 +714,13 @@ async fn handle_open_connection_request(
 											// We'll now create a local service connection.
 											//
 
-											let (_, connection_rowid) = create_service_connection(
-												&mut *state.database.lock().await,
-												Left(data.offer_snapshot_id),
-												consumer_peer_id,
-											);
+											let (_, connection_rowid) =
+												service_connections::create_service_connection(
+													&mut *state.database.lock().await,
+													Left(offer_snapshot_id),
+													consumer_peer_id,
+													currency,
+												);
 
 											future_connections
 												.lock()
@@ -514,7 +780,7 @@ async fn handle_open_connection_request(
 	} else {
 		log::warn!(
 			"Could not find offer snapshot locally by ID {}",
-			data.offer_snapshot_id
+			offer_snapshot_id
 		);
 
 		let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
@@ -528,4 +794,127 @@ async fn handle_open_connection_request(
 
 		outbound_tx.send(outbound_frame).await.unwrap();
 	}
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn p2p_confirm_job_completion(
+	state: Arc<SharedState>,
+	domain_request_id: u32,
+	rpc_outbound_tx: tokio::sync::mpsc::Sender<OutboundFrame>,
+	job_rowid: i64,
+	job_provider_peer_id: libp2p::PeerId,
+	job_consumer_public_key: libp2p::identity::PublicKey,
+	provider_job_id: String,
+	job_hash: Vec<u8>,
+	job_consumer_signature: Vec<u8>,
+) {
+	let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+	let reqres_request = OutboundReqResRequestEnvelope {
+		request: p2p::proto::request_response::Request::ConfirmJobCompletion {
+			provider_job_id,
+			job_hash,
+			consumer_signature: job_consumer_signature,
+			consumer_public_key: job_consumer_public_key.encode_protobuf(),
+		},
+		response_tx,
+		target_peer_id: job_provider_peer_id,
+	};
+
+	state
+		.p2p
+		.lock()
+		.await
+		.reqres_request_tx
+		.send(reqres_request)
+		.await
+		.unwrap();
+
+	type ReqResResponse = p2p::proto::request_response::Response;
+	type ConfirmJobCompletionReqResResponse =
+		p2p::proto::request_response::ConfirmJobCompletionResponse;
+
+	let response = match response_rx.await.unwrap() {
+		Ok(response) => match response {
+			ReqResResponse::ConfirmJobCompletion(response) => match response {
+				ConfirmJobCompletionReqResResponse::Ok => {
+					type ConsumerConfirmJobResult = crate::database::service_jobs::consumer::confirm::ConsumerConfirmJobResult;
+
+					match consumer_confirm_job(
+						&mut *state.database.lock().await,
+						job_rowid,
+					) {
+						ConsumerConfirmJobResult::Ok => ConfirmJobCompletionResponse::Ok,
+
+						ConsumerConfirmJobResult::InvalidJobId => {
+							unreachable!("Job ID must be valid at this point")
+						}
+
+						ConsumerConfirmJobResult::NotSignedYet => {
+							unreachable!("Job must be signed at this point")
+						}
+
+						ConsumerConfirmJobResult::AlreadyConfirmed => {
+							log::warn!(
+								"🤔 Service job #{} was confirmed before the P2P request completed",
+								job_rowid
+							);
+
+							ConfirmJobCompletionResponse::Ok
+						}
+					}
+				}
+
+				ConfirmJobCompletionReqResResponse::AlreadyConfirmed => {
+					log::warn!(
+						"🤔 Service job #{} is already confirmed on the Provider side",
+						job_rowid
+					);
+
+					ConfirmJobCompletionResponse::AlreadyConfirmed
+				}
+
+				error => {
+					type ConsumerSetJobConfirmationErrorResult = crate::database::service_jobs::set_confirmation_error::SetJobConfirmationErrorResult;
+
+					let confirmation_error = format!("{:?}", error);
+
+					match set_job_confirmation_error(
+						&mut *state.database.lock().await,
+						job_rowid,
+						&confirmation_error,
+					) {
+						ConsumerSetJobConfirmationErrorResult::Ok => {
+							ConfirmJobCompletionResponse::ProviderError(confirmation_error)
+						}
+
+						ConsumerSetJobConfirmationErrorResult::InvalidJobId => {
+							unreachable!("Job ID must be valid at this point")
+						}
+
+						ConsumerSetJobConfirmationErrorResult::AlreadyConfirmed => {
+							log::warn!(
+								"😮 Service job #{} was confirmed during setting confirmation error",
+								job_rowid
+							);
+
+							ConfirmJobCompletionResponse::AlreadyConfirmed
+						}
+					}
+				}
+			},
+		},
+
+		Err(err) => {
+			log::warn!("Failed to send ConfirmJobCompletion request: {:?}", err);
+			ConfirmJobCompletionResponse::ProviderUnreacheable
+		}
+	};
+
+	let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
+		id: domain_request_id,
+		data: OutboundResponseFrameData::ConfirmJobCompletion(response),
+	});
+
+	rpc_outbound_tx.send(outbound_frame).await.unwrap();
 }

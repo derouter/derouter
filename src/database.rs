@@ -6,10 +6,11 @@ use rusqlite::types::Value;
 use rusqlite_migration::Migrations;
 
 use crate::dto::{OfferUpdated, ProviderUpdated};
-pub use create_service_connection::create_service_connection;
+pub use service_connections::create_service_connection;
 
 mod cleanup;
-pub mod create_service_connection;
+pub mod service_connections;
+pub mod service_jobs;
 
 static DB_MIGRATIONS_DIR: Dir =
 	include_dir!("$CARGO_MANIFEST_DIR/db/migrations");

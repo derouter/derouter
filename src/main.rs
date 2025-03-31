@@ -85,7 +85,7 @@ async fn main() -> eyre::Result<()> {
 	let shutdown_token_clone = shutdown_token.clone();
 	tokio::spawn(async move {
 		tokio::signal::ctrl_c().await.unwrap();
-		log::info!("🛑 Sending shutdown signal");
+		log::info!("🛑 Sending shutdown signal (PID {})", std::process::id());
 		shutdown_token_clone.cancel();
 	});
 

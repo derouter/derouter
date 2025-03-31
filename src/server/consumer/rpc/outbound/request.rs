@@ -1,10 +1,10 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::dto::{
 	OfferRemoved, OfferUpdated, ProviderHeartbeat, ProviderUpdated,
 };
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Debug)]
 #[serde(tag = "type", content = "data")]
 pub enum OutboundRequestFrameData {
 	OfferRemoved(OfferRemoved),
@@ -13,7 +13,7 @@ pub enum OutboundRequestFrameData {
 	ProviderUpdated(ProviderUpdated),
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Debug)]
 pub struct OutboundRequestFrame {
 	/// An ever-incrementing request counter.
 	pub id: u32,

@@ -9,10 +9,13 @@ CREATE TABLE
     offer_snapshot_rowid INTEGER NOT NULL REFERENCES offer_snapshots (rowid),
     consumer_peer_id TEXT NOT NULL REFERENCES peers (peer_id),
     --
-    -- When the connection was opened.
+    -- The currency enum.
+    currency INTEGER NOT NULL,
+    --
+    -- When the connection was opened (local clock).
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     --
-    -- When the connection was closed.
+    -- When the connection was closed (local clock).
     -- Set to zero when unknown (e.g. after an abrupt restart).
     destroyed_at TIMESTAMP
   );

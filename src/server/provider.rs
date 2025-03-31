@@ -10,7 +10,9 @@ use rpc::{
 		OutboundFrame,
 		request::OutboundRequestFrame,
 		response::{
-			ConfigResponse, OutboundResponseFrame, OutboundResponseFrameData,
+			OutboundResponseFrame, OutboundResponseFrameData,
+			complete_job::CompleteJobResponse, config::ConfigResponse,
+			create_job::CreateJobResponse, fail_job::FailJobResponse,
 		},
 	},
 };
@@ -18,10 +20,14 @@ use tokio::{
 	io::{AsyncReadExt, AsyncWriteExt as _},
 	net::TcpStream,
 };
-use tokio_util::compat::FuturesAsyncReadCompatExt;
+use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt};
 use unwrap_none::UnwrapNone as _;
 
 use crate::{
+	database::service_jobs::{
+		fail::fail_job, provider::complete::provider_complete_job,
+		provider::create::provider_create_job,
+	},
 	state::{ProvidedOffer, ProviderOutboundRequestEnvelope, SharedState},
 	util::{
 		self, ArcMutex,
@@ -213,76 +219,17 @@ pub async fn handle_connection(
 
 			result = cbor_reader.next_cbor::<InboundFrame>() => {
 				match result {
-					Ok(Some(InboundFrame::Request(request))) => {
-						log::debug!("⬅️ {:?}", request.data);
-
-						match request.data {
-							InboundRequestFrameData::Config(data) => {
-								if config.is_some() {
-									log::warn!("Drop provider due to duplicate config");
-
-									let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
-										id: request.id,
-										data: OutboundResponseFrameData::Config(ConfigResponse::AlreadyConfigured)
-									});
-
-									let _ = outbound_tx.send(outbound_frame).await;
-
-									break; // Break the loop to drop the connection.
-								}
-
-								match apply_config(
-									data,
-									state,
-									outbound_request_tx.clone(),
-									future_connections.clone()
-								).await {
-									Ok(data) => {
-										log::debug!("Config validated");
-
-										config = Some(data);
-
-										let outbound_frame = OutboundFrame::Response(
-											OutboundResponseFrame {
-												id: request.id,
-												data: OutboundResponseFrameData::Config(
-													ConfigResponse::Ok
-												)
-											}
-										);
-
-										let _ = outbound_tx.send(outbound_frame).await;
-									}
-
-									Err(response) => {
-										log::warn!("Drop provider due to misconfig: {:?}", response);
-
-										let outbound_frame = OutboundFrame::Response(
-											OutboundResponseFrame {
-												id: request.id,
-												data: OutboundResponseFrameData::Config(response)
-											}
-										);
-
-										log::debug!("➡️ {:?}", outbound_frame);
-										let _ = write_cbor(cbor_reader.get_mut(), &outbound_frame).await;
-										let _ = cbor_reader.get_mut().flush().await;
-
-										break; // Break the loop to drop the connection.
-									}
-								}
-							}
-						}
-					},
-
-					Ok(Some(InboundFrame::Response(response))) => {
-						log::debug!("⬅️ {:?}", response.data);
-
-						if let Some(inbound_response_tx) = inbound_response_txs.remove(&response.id) {
-							let _ = inbound_response_tx.send(response.data);
-						} else {
-							log::warn!("Unknown inbound frame response ID {}", response.id);
-						}
+					Ok(Some(frame)) => {
+						handle_inbound_frame(
+							frame,
+							&mut config,
+							&outbound_tx,
+							state,
+							&outbound_request_tx,
+							&future_connections,
+							&mut cbor_reader,
+							&mut inbound_response_txs
+						).await;
 					}
 
 					Ok(None) => {
@@ -357,6 +304,206 @@ pub async fn handle_connection(
 	for handle in opened_connections.lock().await.deref_mut().values_mut() {
 		handle.abort();
 	}
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_inbound_frame(
+	frame: InboundFrame,
+	config: &mut Option<ProviderConfig>,
+	outbound_tx: &tokio::sync::mpsc::Sender<OutboundFrame>,
+	state: &Arc<SharedState>,
+	outbound_request_tx: &tokio::sync::mpsc::Sender<
+		ProviderOutboundRequestEnvelope,
+	>,
+	future_connections: &ArcMutex<HashMap<i64, libp2p::Stream>>,
+	cbor_reader: &mut CborBufReader<Compat<yamux::Stream>>,
+	inbound_response_txs: &mut HashMap<
+		u32,
+		tokio::sync::oneshot::Sender<InboundResponseFrameData>,
+	>,
+) -> bool {
+	match frame {
+		InboundFrame::Request(request) => {
+			log::debug!("⬅️ {:?}", request.data);
+
+			match request.data {
+				InboundRequestFrameData::Config(data) => {
+					if config.is_some() {
+						log::warn!("Drop provider due to duplicate config");
+
+						let outbound_frame =
+							OutboundFrame::Response(OutboundResponseFrame {
+								id: request.id,
+								data: OutboundResponseFrameData::Config(
+									ConfigResponse::AlreadyConfigured,
+								),
+							});
+
+						let _ = outbound_tx.send(outbound_frame).await;
+
+						return false; // Break the loop to drop the connection.
+					}
+
+					match apply_config(
+						data,
+						state,
+						outbound_request_tx.clone(),
+						future_connections.clone(),
+					)
+					.await
+					{
+						Ok(data) => {
+							log::debug!("Config validated");
+
+							*config = Some(data);
+
+							let outbound_frame =
+								OutboundFrame::Response(OutboundResponseFrame {
+									id: request.id,
+									data: OutboundResponseFrameData::Config(ConfigResponse::Ok),
+								});
+
+							let _ = outbound_tx.send(outbound_frame).await;
+						}
+
+						Err(response) => {
+							log::warn!("Drop provider due to misconfig: {:?}", response);
+
+							let outbound_frame =
+								OutboundFrame::Response(OutboundResponseFrame {
+									id: request.id,
+									data: OutboundResponseFrameData::Config(response),
+								});
+
+							log::debug!("➡️ {:?}", outbound_frame);
+							let _ = write_cbor(cbor_reader.get_mut(), &outbound_frame).await;
+							let _ = cbor_reader.get_mut().flush().await;
+
+							return false; // Break the loop to drop the connection.
+						}
+					}
+				}
+
+				InboundRequestFrameData::CreateJob {
+					connection_id,
+					private_payload,
+				} => {
+					type ProviderCreateJobResult = crate::database::service_jobs::provider::create::ProviderCreateJobResult;
+
+					let response = match provider_create_job(
+						&mut *state.database.lock().await,
+						connection_id,
+						private_payload,
+					) {
+						ProviderCreateJobResult::Ok {
+							job_rowid,
+							provider_job_id,
+							created_at_sync,
+						} => CreateJobResponse::Ok {
+							database_job_id: job_rowid,
+							provider_job_id,
+							created_at_sync,
+						},
+
+						ProviderCreateJobResult::ConnectionNotFound => {
+							CreateJobResponse::InvalidConnectionId
+						}
+					};
+
+					let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
+						id: request.id,
+						data: OutboundResponseFrameData::CreateJob(response),
+					});
+
+					let _ = outbound_tx.send(outbound_frame).await;
+				}
+
+				InboundRequestFrameData::CompleteJob {
+					database_job_id,
+					balance_delta,
+					private_payload,
+					public_payload,
+				} => {
+					type ProviderCompleteJobResult = crate::database::service_jobs::provider::complete::ProviderCompleteJobResult;
+
+					let response = match provider_complete_job(
+						&mut *state.database.lock().await,
+						database_job_id,
+						balance_delta,
+						private_payload,
+						public_payload,
+					) {
+						ProviderCompleteJobResult::Ok { completed_at_sync } => {
+							CompleteJobResponse::Ok { completed_at_sync }
+						}
+						ProviderCompleteJobResult::InvalidJobId => {
+							CompleteJobResponse::InvalidJobId
+						}
+						ProviderCompleteJobResult::InvalidBalanceDelta(message) => {
+							CompleteJobResponse::InvalidBalanceDelta { message }
+						}
+						ProviderCompleteJobResult::AlreadyFailed => {
+							CompleteJobResponse::AlreadyFailed
+						}
+						ProviderCompleteJobResult::AlreadyCompleted {
+							completed_at_sync,
+						} => CompleteJobResponse::AlreadyCompleted { completed_at_sync },
+					};
+
+					let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
+						id: request.id,
+						data: OutboundResponseFrameData::CompleteJob(response),
+					});
+
+					let _ = outbound_tx.send(outbound_frame).await;
+				}
+
+				InboundRequestFrameData::FailJob {
+					database_job_id,
+					reason,
+					reason_class,
+					private_payload,
+				} => {
+					// ADHOC: Otherwise formatting fails.
+					type Error = crate::database::service_jobs::fail::FailJobError;
+
+					let response = match fail_job(
+						&mut *state.database.lock().await,
+						database_job_id,
+						reason,
+						reason_class,
+						private_payload,
+					) {
+						Ok(_) => FailJobResponse::Ok,
+						Err(Error::InvalidJobId) => FailJobResponse::InvalidJobId,
+						Err(Error::AlreadyCompleted) => FailJobResponse::AlreadyCompleted,
+						Err(Error::AlreadyFailed) => FailJobResponse::AlreadyFailed,
+					};
+
+					let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
+						id: request.id,
+						data: OutboundResponseFrameData::FailJob(response),
+					});
+
+					let _ = outbound_tx.send(outbound_frame).await;
+				}
+			}
+		}
+
+		InboundFrame::Response(response) => {
+			log::debug!("⬅️ {:?}", response.data);
+
+			if let Some(inbound_response_tx) =
+				inbound_response_txs.remove(&response.id)
+			{
+				let _ = inbound_response_tx.send(response.data);
+			} else {
+				log::warn!("Unknown inbound frame response ID {}", response.id);
+			}
+		}
+	}
+
+	true
 }
 
 async fn apply_config(

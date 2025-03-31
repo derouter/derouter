@@ -50,7 +50,7 @@ pub async fn run_server(state: Arc<SharedState>) -> eyre::Result<()> {
 			Ok((stream, addr)) = listener.accept() => {
 				log::debug!("Got new TCP connection from {}", addr);
 
-				// FIXME: When connection panics.
+				// BUG: When connection panics.
 				connections.spawn(handle_connection(
 					stream,
 					addr,

@@ -709,7 +709,7 @@ async fn handle_incoming_stream(
 			let (response_tx, response_rx) = tokio::sync::oneshot::channel();
 
 			let envelope = ProviderOutboundRequestEnvelope {
-				frame_data: OutboundRequestFrameData::OpenConnection {
+				frame_data: OutboundRequestFrameData::ProviderOpenConnection {
 					customer_peer_id: from_peer_id.to_base58(),
 					protocol_id,
 					offer_id,

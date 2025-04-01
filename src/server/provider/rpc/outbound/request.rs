@@ -4,7 +4,7 @@ use serde::Serialize;
 #[derive(Serialize, Debug)]
 #[serde(tag = "type", content = "data")]
 pub enum OutboundRequestFrameData {
-	OpenConnection {
+	ProviderOpenConnection {
 		customer_peer_id: String,
 		protocol_id: String,
 		offer_id: String,

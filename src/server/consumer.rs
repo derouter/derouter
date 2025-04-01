@@ -326,7 +326,7 @@ async fn handle_request(
 	log::debug!("⬅️ {:?}", request.data);
 
 	match request.data {
-		InboundRequestFrameData::Config(data) => {
+		InboundRequestFrameData::ConsumerConfig(data) => {
 			if config.is_some() {
 				log::warn!("Already set config, ignoring");
 				return;
@@ -340,23 +340,25 @@ async fn handle_request(
 
 				OutboundFrame::Response(OutboundResponseFrame {
 					id: request.id,
-					data: OutboundResponseFrameData::Config(ConsumerConfigResponse {
-						offers: fetch_offers(
-							&database,
-							&providers
-								.iter()
-								.map(|p| p.peer_id.clone())
-								.collect::<Vec<_>>(),
-						),
-						providers,
-					}),
+					data: OutboundResponseFrameData::ConsumerConfig(
+						ConsumerConfigResponse {
+							offers: fetch_offers(
+								&database,
+								&providers
+									.iter()
+									.map(|p| p.peer_id.clone())
+									.collect::<Vec<_>>(),
+							),
+							providers,
+						},
+					),
 				})
 			};
 
 			outbound_tx.send(outbound_frame).await.unwrap();
 		}
 
-		InboundRequestFrameData::OpenConnection {
+		InboundRequestFrameData::ConsumerOpenConnection {
 			offer_snapshot_id,
 			currency,
 		} => {
@@ -371,7 +373,7 @@ async fn handle_request(
 			.await;
 		}
 
-		InboundRequestFrameData::CreateJob {
+		InboundRequestFrameData::ConsumerCreateJob {
 			connection_id,
 			private_payload,
 		} => {
@@ -394,13 +396,13 @@ async fn handle_request(
 
 			let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
 				id: request.id,
-				data: OutboundResponseFrameData::CreateJob(response),
+				data: OutboundResponseFrameData::ConsumerCreateJob(response),
 			});
 
 			let _ = outbound_tx.send(outbound_frame).await;
 		}
 
-		InboundRequestFrameData::SyncJob {
+		InboundRequestFrameData::ConsumerSyncJob {
 			database_job_id,
 			provider_job_id,
 			private_payload,
@@ -426,13 +428,13 @@ async fn handle_request(
 
 			let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
 				id: request.id,
-				data: OutboundResponseFrameData::SyncJob(response),
+				data: OutboundResponseFrameData::ConsumerSyncJob(response),
 			});
 
 			let _ = outbound_tx.send(outbound_frame).await;
 		}
 
-		InboundRequestFrameData::CompleteJob {
+		InboundRequestFrameData::ConsumerCompleteJob {
 			database_job_id,
 			completed_at_sync,
 			balance_delta,
@@ -505,13 +507,15 @@ async fn handle_request(
 
 			let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
 				id: request.id,
-				data: OutboundResponseFrameData::CompleteJob(response),
+				data: OutboundResponseFrameData::ConsumerCompleteJob(response),
 			});
 
 			let _ = outbound_tx.send(outbound_frame).await;
 		}
 
-		InboundRequestFrameData::ConfirmJobCompletion { database_job_id } => {
+		InboundRequestFrameData::ConsumerConfirmJobCompletion {
+			database_job_id,
+		} => {
 			type ConsumerGetCompletedJobResult = crate::database::service_jobs::consumer::get_unconfirmed::ConsumerGetCompletedJobResult;
 
 			let response = match consumer_get_unconfirmed_job(
@@ -576,14 +580,16 @@ async fn handle_request(
 			if let Some(response) = response {
 				let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
 					id: request.id,
-					data: OutboundResponseFrameData::ConfirmJobCompletion(response),
+					data: OutboundResponseFrameData::ConsumerConfirmJobCompletion(
+						response,
+					),
 				});
 
 				let _ = outbound_tx.send(outbound_frame).await;
 			}
 		}
 
-		InboundRequestFrameData::FailJob {
+		InboundRequestFrameData::ConsumerFailJob {
 			database_job_id,
 			reason,
 			reason_class,
@@ -606,7 +612,7 @@ async fn handle_request(
 
 			let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
 				id: request.id,
-				data: OutboundResponseFrameData::FailJob(response),
+				data: OutboundResponseFrameData::ConsumerFailJob(response),
 			});
 
 			let _ = outbound_tx.send(outbound_frame).await;
@@ -770,7 +776,7 @@ async fn handle_open_connection_request(
 
 			let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
 				id: request_id,
-				data: OutboundResponseFrameData::OpenConnection(
+				data: OutboundResponseFrameData::ConsumerOpenConnection(
 					open_connection_response,
 				),
 			});
@@ -785,7 +791,7 @@ async fn handle_open_connection_request(
 
 		let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
 			id: request_id,
-			data: OutboundResponseFrameData::OpenConnection(
+			data: OutboundResponseFrameData::ConsumerOpenConnection(
 				OpenConnectionResponse::OtherLocalError(
 					"Could not find offer snapshot locally".to_owned(),
 				),
@@ -913,7 +919,7 @@ async fn p2p_confirm_job_completion(
 
 	let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
 		id: domain_request_id,
-		data: OutboundResponseFrameData::ConfirmJobCompletion(response),
+		data: OutboundResponseFrameData::ConsumerConfirmJobCompletion(response),
 	});
 
 	rpc_outbound_tx.send(outbound_frame).await.unwrap();

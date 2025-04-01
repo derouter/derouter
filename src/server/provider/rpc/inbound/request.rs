@@ -4,12 +4,13 @@ pub mod config;
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", content = "data")]
+#[allow(clippy::enum_variant_names)]
 pub enum InboundRequestFrameData {
-	Config(config::ProviderConfig),
+	ProviderConfig(config::ProviderConfig),
 
 	/// Create a new incomplete service job
 	/// associated with given connection, locally.
-	CreateJob {
+	ProviderCreateJob {
 		/// Local connection ID.
 		connection_id: i64,
 
@@ -18,7 +19,7 @@ pub enum InboundRequestFrameData {
 	},
 
 	/// Mark a job as completed, locally.
-	CompleteJob {
+	ProviderCompleteJob {
 		/// Local job ID.
 		database_job_id: i64,
 
@@ -35,7 +36,7 @@ pub enum InboundRequestFrameData {
 	},
 
 	/// Mark a job as failed, locally.
-	FailJob {
+	ProviderFailJob {
 		/// Local job ID.
 		database_job_id: i64,
 

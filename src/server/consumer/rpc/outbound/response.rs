@@ -17,14 +17,15 @@ pub mod sync_job;
 
 #[derive(Serialize, Debug)]
 #[serde(tag = "type", content = "data")]
+#[allow(clippy::enum_variant_names)]
 pub enum OutboundResponseFrameData {
-	Config(ConsumerConfigResponse),
-	OpenConnection(OpenConnectionResponse),
-	CreateJob(CreateJobResponse),
-	CompleteJob(CompleteJobResponse),
-	ConfirmJobCompletion(ConfirmJobCompletionResponse),
-	FailJob(FailJobResponse),
-	SyncJob(SyncJobResponse),
+	ConsumerConfig(ConsumerConfigResponse),
+	ConsumerOpenConnection(OpenConnectionResponse),
+	ConsumerCreateJob(CreateJobResponse),
+	ConsumerCompleteJob(CompleteJobResponse),
+	ConsumerConfirmJobCompletion(ConfirmJobCompletionResponse),
+	ConsumerFailJob(FailJobResponse),
+	ConsumerSyncJob(SyncJobResponse),
 }
 
 #[derive(Serialize, Debug)]

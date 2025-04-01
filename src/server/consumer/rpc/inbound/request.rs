@@ -7,11 +7,12 @@ pub mod config;
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", content = "data")]
+#[allow(clippy::enum_variant_names)]
 pub enum InboundRequestFrameData {
-	Config(ConsumerConfig),
+	ConsumerConfig(ConsumerConfig),
 
 	/// Open a new connection for given offer.
-	OpenConnection {
+	ConsumerOpenConnection {
 		/// Local offer snapshot ID.
 		offer_snapshot_id: i64,
 
@@ -24,7 +25,7 @@ pub enum InboundRequestFrameData {
 	/// may be used to record pre-response Provider errors,
 	/// when its `provider_job_id` is not yet known.
 	/// Shall call [SyncJob] before [CompleteJob].
-	CreateJob {
+	ConsumerCreateJob {
 		/// The associated connection ID.
 		connection_id: i64,
 
@@ -34,7 +35,7 @@ pub enum InboundRequestFrameData {
 
 	/// Synchronize a previosuly [created](CreateJob) job with Provider's data.
 	/// Useful for long-running jobs, **mandatory** before a [CompleteJob] call.
-	SyncJob {
+	ConsumerSyncJob {
 		/// Job ID returned by [`CreateJob`].
 		database_job_id: i64,
 
@@ -50,7 +51,7 @@ pub enum InboundRequestFrameData {
 
 	/// Mark a previously [synchronized](SyncJob) job as completed.
 	/// Shall call [ConfirmJobCompletion] afterwards.
-	CompleteJob {
+	ConsumerCompleteJob {
 		/// Job ID returned by [`CreateJob`].
 		database_job_id: i64,
 
@@ -70,14 +71,14 @@ pub enum InboundRequestFrameData {
 
 	/// Confirm a job completion signature with the Provider.
 	/// Shall be called after [CompleteJob].
-	ConfirmJobCompletion {
+	ConsumerConfirmJobCompletion {
 		/// Job ID returned by [`CreateJob`].
 		database_job_id: i64,
 	},
 
 	/// Mark a previously [created](CreateJob) job as failed.
 	/// May also be called after [SyncJob].
-	FailJob {
+	ConsumerFailJob {
 		/// Job ID returned by [`CreateJob`].
 		database_job_id: i64,
 

@@ -11,11 +11,12 @@ pub mod fail_job;
 
 #[derive(Serialize, Debug)]
 #[serde(tag = "type", content = "data")]
+#[allow(clippy::enum_variant_names)]
 pub enum OutboundResponseFrameData {
-	Config(ConfigResponse),
-	CreateJob(CreateJobResponse),
-	CompleteJob(CompleteJobResponse),
-	FailJob(FailJobResponse),
+	ProviderConfig(ConfigResponse),
+	ProviderCreateJob(CreateJobResponse),
+	ProviderCompleteJob(CompleteJobResponse),
+	ProviderFailJob(FailJobResponse),
 }
 
 #[derive(Serialize, Debug)]

@@ -327,14 +327,14 @@ async fn handle_inbound_frame(
 			log::debug!("⬅️ {:?}", request.data);
 
 			match request.data {
-				InboundRequestFrameData::Config(data) => {
+				InboundRequestFrameData::ProviderConfig(data) => {
 					if config.is_some() {
 						log::warn!("Drop provider due to duplicate config");
 
 						let outbound_frame =
 							OutboundFrame::Response(OutboundResponseFrame {
 								id: request.id,
-								data: OutboundResponseFrameData::Config(
+								data: OutboundResponseFrameData::ProviderConfig(
 									ConfigResponse::AlreadyConfigured,
 								),
 							});
@@ -360,7 +360,9 @@ async fn handle_inbound_frame(
 							let outbound_frame =
 								OutboundFrame::Response(OutboundResponseFrame {
 									id: request.id,
-									data: OutboundResponseFrameData::Config(ConfigResponse::Ok),
+									data: OutboundResponseFrameData::ProviderConfig(
+										ConfigResponse::Ok,
+									),
 								});
 
 							let _ = outbound_tx.send(outbound_frame).await;
@@ -372,7 +374,7 @@ async fn handle_inbound_frame(
 							let outbound_frame =
 								OutboundFrame::Response(OutboundResponseFrame {
 									id: request.id,
-									data: OutboundResponseFrameData::Config(response),
+									data: OutboundResponseFrameData::ProviderConfig(response),
 								});
 
 							log::debug!("➡️ {:?}", outbound_frame);
@@ -384,7 +386,7 @@ async fn handle_inbound_frame(
 					}
 				}
 
-				InboundRequestFrameData::CreateJob {
+				InboundRequestFrameData::ProviderCreateJob {
 					connection_id,
 					private_payload,
 				} => {
@@ -412,13 +414,13 @@ async fn handle_inbound_frame(
 
 					let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
 						id: request.id,
-						data: OutboundResponseFrameData::CreateJob(response),
+						data: OutboundResponseFrameData::ProviderCreateJob(response),
 					});
 
 					let _ = outbound_tx.send(outbound_frame).await;
 				}
 
-				InboundRequestFrameData::CompleteJob {
+				InboundRequestFrameData::ProviderCompleteJob {
 					database_job_id,
 					balance_delta,
 					private_payload,
@@ -452,13 +454,13 @@ async fn handle_inbound_frame(
 
 					let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
 						id: request.id,
-						data: OutboundResponseFrameData::CompleteJob(response),
+						data: OutboundResponseFrameData::ProviderCompleteJob(response),
 					});
 
 					let _ = outbound_tx.send(outbound_frame).await;
 				}
 
-				InboundRequestFrameData::FailJob {
+				InboundRequestFrameData::ProviderFailJob {
 					database_job_id,
 					reason,
 					reason_class,
@@ -482,7 +484,7 @@ async fn handle_inbound_frame(
 
 					let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
 						id: request.id,
-						data: OutboundResponseFrameData::FailJob(response),
+						data: OutboundResponseFrameData::ProviderFailJob(response),
 					});
 
 					let _ = outbound_tx.send(outbound_frame).await;

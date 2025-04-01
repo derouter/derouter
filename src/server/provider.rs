@@ -89,91 +89,23 @@ pub async fn handle_connection(
 			{
 				// Connect yamux & p2p streams.
 				let handle = tokio::spawn(async move {
-					let mut yamux_buf = [0u8; 8192];
-					let mut p2p_buf = [0u8; 8192];
-					let mut p2p_compat = p2p_stream.compat();
+					match tokio::io::copy_bidirectional(
+						&mut yamux_compat,
+						&mut p2p_stream.compat(),
+					)
+					.await
+					{
+						Ok(_) => {
+							log::debug!(
+								"Both Yamux & P2P streams shut down ({})",
+								connection_id
+							);
+						}
 
-					loop {
-						tokio::select! {
-							result = yamux_compat.read(&mut yamux_buf) => {
-								match result {
-									Ok(size) => {
-										if size == 0 {
-											log::debug!("Yamux stream EOF");
-											break;
-										}
-
-										log::debug!("Read {} bytes from Yamux stream", size);
-
-										match p2p_compat.write_all(&yamux_buf[0..size]).await {
-											Ok(_) => {
-												match p2p_compat.flush().await {
-													Ok(_) => {},
-													Err(e) => {
-														log::error!("Failed to flush the P2P stream: {:?}", e);
-													}
-												}
-											},
-											Err(e) => {
-												log::error!("Failed to write to P2P stream: {:?}", e);
-											}
-										}
-									},
-									Err(e) => {
-										log::error!("Failed to read from Yamux stream: {:?}", e);
-									},
-								}
-							}
-
-							result = p2p_compat.read(&mut p2p_buf) => {
-								match result {
-									Ok(size) => {
-										if size == 0 {
-											log::debug!("P2P stream EOF");
-											break;
-										}
-
-										log::debug!("Read {} bytes from P2P stream", size);
-
-										match yamux_compat.write_all(&p2p_buf[0..size]).await {
-											Ok(_) => {
-												match yamux_compat.flush().await {
-													Ok(_) => {},
-													Err(e) => {
-														log::error!("Failed to flush Yamux stream: {:?}", e);
-													}
-												}
-											},
-											Err(e) => {
-												log::error!("Failed to write to Yamux stream: {:?}", e);
-											}
-										}
-									},
-									Err(e) => {
-										log::error!("Failed to read from P2P stream: {:?}", e);
-									},
-								}
-							}
+						Err(e) => {
+							log::error!("(copy_bidirectional) {:?}", e);
 						}
 					}
-
-					// match tokio::io::copy_bidirectional(
-					// 	&mut yamux_compat,
-					// 	&mut p2p_stream.compat(),
-					// )
-					// .await
-					// {
-					// 	Ok(_) => {
-					// 		log::debug!(
-					// 			"Both Yamux & P2P streams shut down ({})",
-					// 			connection_id
-					// 		);
-					// 	}
-
-					// 	Err(e) => {
-					// 		log::error!("(copy_bidirectional) {:?}", e);
-					// 	}
-					// }
 				});
 
 				opened_connections

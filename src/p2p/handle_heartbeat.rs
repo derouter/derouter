@@ -2,7 +2,7 @@ use libp2p::PeerId;
 use rusqlite::{OptionalExtension, params};
 
 use crate::{
-	dto::{OfferRemoved, OfferUpdated, ProviderHeartbeat, ProviderUpdated},
+	dto::{OfferRemoved, OfferSnapshot, ProviderHeartbeat, ProviderRecord},
 	state::SharedState,
 	util::TIME_ZERO,
 };
@@ -14,9 +14,9 @@ pub(super) async fn handle_heartbeat(
 	source: PeerId,
 	heartbeat: proto::gossipsub::Heartbeat,
 ) -> eyre::Result<()> {
-	let mut updated_providers = Vec::<ProviderUpdated>::new();
+	let mut updated_providers = Vec::<ProviderRecord>::new();
 	let mut heartbeat_providers = Vec::<ProviderHeartbeat>::new();
-	let mut updated_offers = Vec::<OfferUpdated>::new();
+	let mut updated_offers = Vec::<OfferSnapshot>::new();
 	let mut removed_offers = Vec::<OfferRemoved>::new();
 
 	// REFACTOR: Try flattening the block.
@@ -142,7 +142,7 @@ pub(super) async fn handle_heartbeat(
 						)
 						.unwrap();
 
-						updated_providers.push(ProviderUpdated {
+						updated_providers.push(ProviderRecord {
 							peer_id: source.to_base58(),
 							name: provider_details.name,
 							teaser: provider_details.teaser,
@@ -269,7 +269,7 @@ pub(super) async fn handle_heartbeat(
 										)
 										.unwrap();
 
-									updated_offers.push(OfferUpdated {
+									updated_offers.push(OfferSnapshot {
 										snapshot_id: snapshot_rowid,
 										provider_peer_id: source.to_base58(),
 										protocol_id: protocol_id.clone(),
@@ -277,6 +277,7 @@ pub(super) async fn handle_heartbeat(
 										protocol_payload: incoming_snapshot
 											.protocol_payload
 											.clone(),
+										active: true,
 									});
 								}
 							} else {
@@ -297,6 +298,9 @@ pub(super) async fn handle_heartbeat(
 
 								removed_offers.push(OfferRemoved {
 									snapshot_id: active_snapshot.rowid,
+									protocol_id: protocol_id.to_string(),
+									provider_peer_id: source.to_base58(),
+									offer_id: offer_id.to_string(),
 								});
 							}
 						}
@@ -364,12 +368,13 @@ pub(super) async fn handle_heartbeat(
 										)
 										.unwrap();
 
-									updated_offers.push(OfferUpdated {
+									updated_offers.push(OfferSnapshot {
 										snapshot_id: snapshot_rowid,
 										provider_peer_id: source.to_base58(),
 										offer_id,
 										protocol_id: protocol_id.clone(),
 										protocol_payload: incoming_offer.protocol_payload,
+										active: true,
 									});
 								}
 							}
@@ -441,12 +446,13 @@ pub(super) async fn handle_heartbeat(
 					)
 					.unwrap();
 
-					updated_offers.push(OfferUpdated {
+					updated_offers.push(OfferSnapshot {
 						snapshot_id: tx.last_insert_rowid(),
 						provider_peer_id: source.to_base58(),
 						offer_id,
 						protocol_id: protocol_id.clone(),
 						protocol_payload: offer.protocol_payload,
+						active: true,
 					});
 				}
 			}
@@ -457,27 +463,23 @@ pub(super) async fn handle_heartbeat(
 		tx.commit().unwrap();
 	}
 
-	let consumer_lock = state.consumer.lock().await;
-	let tx = &consumer_lock.notification_tx;
+	let consumer_lock = state.rpc.lock().await;
+	let tx = &consumer_lock.event_tx;
 
 	for provider in updated_providers {
-		let _ = tx.send(crate::state::ConsumerNotification::ProviderUpdated(
-			provider,
-		));
+		let _ = tx.send(crate::state::RpcEvent::ProviderUpdated(provider));
 	}
 
 	for provider in heartbeat_providers {
-		let _ = tx.send(crate::state::ConsumerNotification::ProviderHeartbeat(
-			provider,
-		));
+		let _ = tx.send(crate::state::RpcEvent::ProviderHeartbeat(provider));
 	}
 
 	for offer in removed_offers {
-		let _ = tx.send(crate::state::ConsumerNotification::OfferRemoved(offer));
+		let _ = tx.send(crate::state::RpcEvent::OfferRemoved(offer));
 	}
 
 	for offer in updated_offers {
-		let _ = tx.send(crate::state::ConsumerNotification::OfferUpdated(offer));
+		let _ = tx.send(crate::state::RpcEvent::OfferUpdated(offer));
 	}
 
 	Ok(())

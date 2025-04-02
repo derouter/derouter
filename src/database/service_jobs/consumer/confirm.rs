@@ -1,7 +1,8 @@
 use rusqlite::{Connection, OptionalExtension};
 
-pub enum ConsumerConfirmJobResult {
-	Ok,
+use crate::{database::service_jobs::get::get_job, dto::JobRecord};
+
+pub enum ConsumerConfirmJobError {
 	InvalidJobId,
 	NotSignedYet,
 	AlreadyConfirmed,
@@ -12,7 +13,7 @@ pub enum ConsumerConfirmJobResult {
 pub fn consumer_confirm_job(
 	database: &mut Connection,
 	job_rowid: i64,
-) -> ConsumerConfirmJobResult {
+) -> Result<JobRecord, ConsumerConfirmJobError> {
 	let tx = database.transaction().unwrap();
 
 	struct JobRow {
@@ -44,13 +45,13 @@ pub fn consumer_confirm_job(
 	match job {
 		Some(job) => {
 			if job.signature_confirmed_at_local.is_some() {
-				return ConsumerConfirmJobResult::AlreadyConfirmed;
+				return Err(ConsumerConfirmJobError::AlreadyConfirmed);
 			} else if job.consumer_signature.is_none() {
-				return ConsumerConfirmJobResult::NotSignedYet;
+				return Err(ConsumerConfirmJobError::NotSignedYet);
 			}
 		}
 
-		None => return ConsumerConfirmJobResult::InvalidJobId,
+		None => return Err(ConsumerConfirmJobError::InvalidJobId),
 	};
 
 	let mut update_job_stmt = tx
@@ -68,9 +69,10 @@ pub fn consumer_confirm_job(
 		.unwrap();
 
 	update_job_stmt.execute([job_rowid]).unwrap();
-
 	drop(update_job_stmt);
+
+	let job_record = get_job(&tx, job_rowid).unwrap();
 	tx.commit().unwrap();
 
-	ConsumerConfirmJobResult::Ok
+	Ok(job_record)
 }

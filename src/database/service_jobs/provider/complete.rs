@@ -1,11 +1,14 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::database::{
-	service_connections::Currency, service_jobs::validate_balance_delta,
+use crate::{
+	database::{
+		service_connections::Currency,
+		service_jobs::{get::get_job, validate_balance_delta},
+	},
+	dto::JobRecord,
 };
 
-pub enum ProviderCompleteJobResult {
-	Ok { completed_at_sync: i64 },
+pub enum ProviderCompleteJobError {
 	InvalidJobId,
 	AlreadyCompleted { completed_at_sync: i64 },
 	AlreadyFailed,
@@ -19,10 +22,10 @@ pub fn provider_complete_job(
 	balance_delta: Option<String>,
 	private_payload: Option<String>,
 	public_payload: String,
-) -> ProviderCompleteJobResult {
+) -> Result<JobRecord, ProviderCompleteJobError> {
 	let tx = database.transaction().unwrap();
 
-	let completed_at_sync = {
+	{
 		struct JobRow {
 			completed_at_sync: Option<i64>,
 			currency: Currency,
@@ -56,21 +59,21 @@ pub fn provider_complete_job(
 		match job {
 			Some(job) => {
 				if job.reason.is_some() {
-					return ProviderCompleteJobResult::AlreadyFailed;
+					return Err(ProviderCompleteJobError::AlreadyFailed);
 				} else if let Some(completed_at_sync) = job.completed_at_sync {
-					return ProviderCompleteJobResult::AlreadyCompleted {
+					return Err(ProviderCompleteJobError::AlreadyCompleted {
 						completed_at_sync,
-					};
+					});
 				} else if let Some(balance_delta) = &balance_delta {
 					if let Some(err) = validate_balance_delta(balance_delta, job.currency)
 					{
-						return ProviderCompleteJobResult::InvalidBalanceDelta(err);
+						return Err(ProviderCompleteJobError::InvalidBalanceDelta(err));
 					}
 				}
 			}
 
 			None => {
-				return ProviderCompleteJobResult::InvalidJobId;
+				return Err(ProviderCompleteJobError::InvalidJobId);
 			}
 		};
 
@@ -87,8 +90,8 @@ pub fn provider_complete_job(
 
 						-- Only update `private_payload`
 						-- if the argument is not NULL.
-						private_payload = CASE ?4
-							WHEN ?4 IS NOT NULL THEN ?4
+						private_payload = CASE
+							WHEN (?4 IS NOT NULL) THEN ?4
 							ELSE private_payload
 							END,
 
@@ -112,7 +115,8 @@ pub fn provider_complete_job(
 		completed_at_sync
 	};
 
+	let job_record = get_job(&tx, job_rowid).unwrap();
 	tx.commit().unwrap();
 
-	ProviderCompleteJobResult::Ok { completed_at_sync }
+	Ok(job_record)
 }

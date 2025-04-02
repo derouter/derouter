@@ -1,13 +1,9 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
-pub enum ProviderCreateJobResult {
-	Ok {
-		job_rowid: i64,
-		provider_job_id: String,
-		created_at_sync: i64,
-	},
+use crate::{database::service_jobs::get::get_job, dto::JobRecord};
 
+pub enum ProviderCreateJobError {
 	ConnectionNotFound,
 }
 
@@ -16,10 +12,10 @@ pub fn provider_create_job(
 	database: &mut Connection,
 	connection_rowid: i64,
 	private_payload: Option<String>,
-) -> ProviderCreateJobResult {
+) -> Result<JobRecord, ProviderCreateJobError> {
 	let tx = database.transaction().unwrap();
 
-	let ok = {
+	let job_rowid = {
 		// OPTIMIZE: Handle SQLite error instead of querying.
 		let conn_exists = tx
 			.query_row(
@@ -35,7 +31,7 @@ pub fn provider_create_job(
 			.unwrap();
 
 		if conn_exists.is_none() {
-			return ProviderCreateJobResult::ConnectionNotFound;
+			return Err(ProviderCreateJobError::ConnectionNotFound);
 		}
 
 		let mut insert_job_stmt = tx
@@ -65,15 +61,11 @@ pub fn provider_create_job(
 			])
 			.unwrap();
 
-		let job_rowid = tx.last_insert_rowid();
-
-		ProviderCreateJobResult::Ok {
-			job_rowid,
-			provider_job_id,
-			created_at_sync,
-		}
+		tx.last_insert_rowid()
 	};
 
+	let job_record = get_job(&tx, job_rowid).unwrap();
 	tx.commit().unwrap();
-	ok
+
+	Ok(job_record)
 }

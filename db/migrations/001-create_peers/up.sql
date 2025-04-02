@@ -7,6 +7,7 @@ CREATE TABLE
     provider_description TEXT,
     --
     -- When the provider details were last updated, in their clock.
+    -- REFACTOR: Rename this and others to `_local`/`_sync`.
     their_provider_updated_at TIMESTAMP,
     --
     -- When the provider details were last updated, in our clock.

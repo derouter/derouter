@@ -10,7 +10,7 @@ mod database;
 mod dto;
 mod logger;
 mod p2p;
-mod server;
+mod rpc;
 mod state;
 mod util;
 
@@ -108,7 +108,7 @@ async fn main() -> eyre::Result<()> {
 	let shutdown_token_clone = shutdown_token.clone();
 
 	let server_handle = tracker.spawn(async move {
-		if let Err(e) = server::run_server(state_clone).await {
+		if let Err(e) = rpc::server::run(state_clone).await {
 			log::error!("{:?}", e);
 			shutdown_token_clone.cancel();
 		}

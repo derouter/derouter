@@ -5,7 +5,9 @@ use crate::database::service_connections::Currency;
 
 pub mod consumer;
 pub mod fail;
+pub mod get;
 pub mod provider;
+pub mod query_all;
 pub mod set_confirmation_error;
 
 // OPTIMIZE: Make it borrow values instead of owning.

@@ -1,12 +1,14 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::database::{
-	service_connections::Currency,
-	service_jobs::{JobHashingPayload, hash_job, validate_balance_delta},
+use crate::{
+	database::{
+		service_connections::Currency,
+		service_jobs::{JobHashingPayload, hash_job, validate_balance_delta},
+	},
+	dto::JobRecord,
 };
 
-pub enum ConsumerCompleteJobResult {
-	Ok,
+pub enum ConsumerCompleteJobError {
 	InvalidJobId,
 	ConsumerPeerIdMismatch,
 	NotSyncedYet,
@@ -27,7 +29,7 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 	private_payload: Option<String>,
 	completed_at_sync: i64,
 	sign_fn: SignFn,
-) -> ConsumerCompleteJobResult {
+) -> Result<JobRecord, ConsumerCompleteJobError> {
 	let tx = database.transaction().unwrap();
 
 	struct JobRow {
@@ -39,6 +41,9 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 		provider_peer_id: String,
 		protocol_id: String,
 		offer_protocol_payload: String,
+		created_at_local: chrono::DateTime<chrono::Utc>,
+		offer_snapshot_rowid: i64,
+		private_payload: Option<String>,
 	}
 
 	let job = tx
@@ -52,7 +57,10 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 					offer_snapshots.provider_peer_id,     -- #4
 					offer_snapshots.protocol_id,          -- #5
 					offer_snapshots.protocol_payload,     -- #6
-					service_jobs.created_at_sync          -- #7
+					service_jobs.created_at_sync,         -- #7
+					service_jobs.created_at_local,        -- #8
+					offer_snapshots.rowid,                -- #9
+					service_jobs.private_payload          -- #10
 				FROM service_jobs
 				JOIN service_connections
 					ON service_connections.rowid = service_jobs.connection_rowid
@@ -72,6 +80,9 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 					protocol_id: row.get(5)?,
 					offer_protocol_payload: row.get(6)?,
 					created_at_sync: row.get(7)?,
+					created_at_local: row.get(8)?,
+					offer_snapshot_rowid: row.get(9)?,
+					private_payload: row.get(10)?,
 				})
 			},
 		)
@@ -81,32 +92,34 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 	let job = match job {
 		Some(job) => {
 			if job.consumer_peer_id != consumer_peer_id {
-				return ConsumerCompleteJobResult::ConsumerPeerIdMismatch;
+				return Err(ConsumerCompleteJobError::ConsumerPeerIdMismatch);
 			} else if job.provider_job_id.is_none() || job.created_at_sync.is_none() {
-				return ConsumerCompleteJobResult::NotSyncedYet;
+				return Err(ConsumerCompleteJobError::NotSyncedYet);
 			} else if job.completed_at_local.is_some() {
-				return ConsumerCompleteJobResult::AlreadyCompleted;
+				return Err(ConsumerCompleteJobError::AlreadyCompleted);
 			} else if let Some(balance_delta) = &balance_delta {
 				if let Some(message) =
 					validate_balance_delta(balance_delta, job.currency)
 				{
-					return ConsumerCompleteJobResult::InvalidBalanceDelta { message };
+					return Err(ConsumerCompleteJobError::InvalidBalanceDelta {
+						message,
+					});
 				}
 			}
 
 			job
 		}
 
-		None => return ConsumerCompleteJobResult::InvalidJobId,
+		None => return Err(ConsumerCompleteJobError::InvalidJobId),
 	};
 
 	let job_hashing_payload = JobHashingPayload {
 		consumer_peer_id: job.consumer_peer_id,
 		provider_peer_id: job.provider_peer_id.clone(),
-		protocol_id: job.protocol_id,
+		protocol_id: job.protocol_id.clone(),
 		offer_payload: job.offer_protocol_payload,
 		currency: job.currency.code().to_string(),
-		provider_job_id: job.provider_job_id.unwrap().clone(),
+		provider_job_id: job.provider_job_id.clone().unwrap(),
 		job_public_payload: public_payload.clone(),
 		job_completed_at_sync: completed_at_sync,
 		job_created_at_sync: job.created_at_sync.unwrap(),
@@ -115,6 +128,7 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 
 	let job_hash = hash_job(job_hashing_payload);
 	let consumer_signature = sign_fn(&job_hash);
+	let completed_at_local = chrono::Utc::now();
 
 	let mut update_job_stmt = tx
 		.prepare_cached(
@@ -127,15 +141,15 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 
 					-- Only update `private_payload`
 					-- if the argument is not NULL.
-					private_payload = CASE ?4
-						WHEN ?4 IS NOT NULL THEN ?4
+					private_payload = CASE
+						WHEN (?4 IS NOT NULL) THEN ?4
 						ELSE private_payload
 						END,
 
-					completed_at_local = CURRENT_TIMESTAMP,
-					completed_at_sync = ?5,
-					hash = ?6,
-					consumer_signature = ?7
+					completed_at_local = ?5,
+					completed_at_sync = ?6,
+					hash = ?7,
+					consumer_signature = ?8
 				WHERE
 					rowid = ?1
 			"#,
@@ -148,6 +162,7 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 			&balance_delta,
 			&public_payload,
 			&private_payload,
+			completed_at_local,
 			completed_at_sync,
 			&job_hash,
 			&consumer_signature
@@ -157,5 +172,24 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 	drop(update_job_stmt);
 	tx.commit().unwrap();
 
-	ConsumerCompleteJobResult::Ok
+	Ok(JobRecord {
+		job_rowid,
+		provider_peer_id: job.provider_peer_id,
+		consumer_peer_id,
+		offer_snapshot_rowid: job.offer_snapshot_rowid,
+		offer_protocol_id: job.protocol_id,
+		currency: job.currency,
+		balance_delta,
+		public_payload: Some(public_payload),
+		private_payload: private_payload.or(job.private_payload),
+		reason: None,
+		reason_class: None,
+		created_at_local: job.created_at_local,
+		created_at_sync: job.created_at_sync,
+		completed_at_local: Some(completed_at_local),
+		completed_at_sync: Some(completed_at_sync),
+		signature_confirmed_at_local: None,
+		confirmation_error: None,
+		provider_job_id: job.provider_job_id,
+	})
 }

@@ -5,9 +5,14 @@ use serde::{Deserialize, Serialize};
 use crate::{
 	UserConfig, UserProviderConfig,
 	database::open_database,
-	dto::{OfferRemoved, OfferUpdated, ProviderHeartbeat, ProviderUpdated},
-	p2p::{OutboundReqResRequestEnvelope, OutboundStreamRequest},
-	server,
+	dto::{
+		JobRecord, OfferRemoved, OfferSnapshot, ProviderHeartbeat, ProviderRecord,
+	},
+	p2p::{
+		OutboundReqResRequestEnvelope, OutboundStreamRequest,
+		read_or_create_keypair,
+	},
+	rpc,
 	util::{ArcMutex, to_arc_mutex},
 };
 
@@ -23,21 +28,19 @@ const DEFAULT_SERVER_PORT: u16 = 4269;
 
 #[derive(Clone, Debug)]
 pub struct ProvidedOffer {
-	pub provider_id: String,
-
 	/// It may or may not be stored into DB yet.
 	pub snapshot_rowid: Option<i64>,
 
 	pub protocol_payload: serde_json::Value,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub enum ConsumerNotification {
+pub enum RpcEvent {
 	OfferRemoved(OfferRemoved),
-	OfferUpdated(OfferUpdated),
+	OfferUpdated(OfferSnapshot),
 	ProviderHeartbeat(ProviderHeartbeat),
-	ProviderUpdated(ProviderUpdated),
+	ProviderUpdated(ProviderRecord),
+	JobUpdated(Box<JobRecord>),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -71,18 +74,28 @@ pub struct Config {
 	pub provider: ProviderConfig,
 }
 
-pub struct ConsumerState {
-	/// A broadcast notification channel, received by every consumer module.
-	pub notification_tx: tokio::sync::broadcast::Sender<ConsumerNotification>,
+pub struct RpcState {
+	/// A broadcast event channel, received by all RPC listeners.
+	pub event_tx: tokio::sync::broadcast::Sender<RpcEvent>,
 }
 
 pub struct ProviderOutboundRequestEnvelope {
-	pub frame_data: server::provider::rpc::OutboundRequestFrameData,
-	pub response_tx: tokio::sync::oneshot::Sender<
-		server::provider::rpc::InboundResponseFrameData,
-	>,
+	pub frame_data: rpc::OutboundRequestFrameData,
+	pub response_tx: tokio::sync::oneshot::Sender<rpc::InboundResponseFrameData>,
 }
 
+impl ProviderOutboundRequestEnvelope {
+	pub fn orphan(frame_data: rpc::OutboundRequestFrameData) -> Self {
+		let (response_tx, _) = tokio::sync::oneshot::channel();
+
+		Self {
+			frame_data,
+			response_tx,
+		}
+	}
+}
+
+#[derive(Debug)]
 pub struct ProviderModuleState {
 	/// Channel for outbound requests.
 	pub outbound_request_tx:
@@ -91,15 +104,22 @@ pub struct ProviderModuleState {
 	/// ROWIDs of provider service connections waiting
 	/// for the module to open a Yamux stream for it.
 	pub future_service_connections: ArcMutex<HashMap<i64, libp2p::Stream>>,
+
+	/// `ProtocolId` => `OfferId` => [`Offer`](ProvidedOffer).
+	/// Synchronized with the [provider](ProviderState)'s `offers_module_map`.
+	pub offers: HashMap<String, HashMap<String, ProvidedOffer>>,
 }
 
 pub struct ProviderState {
-	pub modules: HashMap<String, ProviderModuleState>,
+	/// Ever-incrementing module ID counter.
+	pub module_ids_counter: u32,
 
-	/// A map of actual offers, defined by the connected provider modules
-	/// (`{ ProtocolId => { OfferId => Offer } }`).
-	// REFACTOR: Move to `ProviderStateModule`.
-	pub offers: HashMap<String, HashMap<String, ProvidedOffer>>,
+	/// [`ModuleId`](module_ids_counter) => `Module`.
+	pub modules: HashMap<u32, ProviderModuleState>,
+
+	/// `ProtocolId` => `OfferId` => [`ModuleId`](module_ids_counter).
+	/// Synchronized with the according [module](ProviderModuleState)'s `offers`.
+	pub offers_module_map: HashMap<String, HashMap<String, u32>>,
 
 	/// When the provider data has been last time updated at.
 	pub last_updated_at: chrono::DateTime<chrono::Utc>,
@@ -107,7 +127,7 @@ pub struct ProviderState {
 
 pub struct P2pState {
 	/// Set when P2P is running.
-	keypair: Option<libp2p::identity::Keypair>,
+	pub keypair: libp2p::identity::Keypair,
 
 	/// Channel for outbound ReqRes requests.
 	#[allow(dead_code)]
@@ -118,27 +138,10 @@ pub struct P2pState {
 	pub stream_request_tx: tokio::sync::mpsc::Sender<OutboundStreamRequest>,
 }
 
-impl P2pState {
-	pub fn set_keypair(&mut self, keypair: libp2p::identity::Keypair) {
-		self.keypair = Some(keypair);
-	}
-
-	pub fn sign(
-		&self,
-		msg: &[u8],
-	) -> Option<Result<Vec<u8>, libp2p::identity::SigningError>> {
-		self.keypair.as_ref().map(|k| k.sign(msg))
-	}
-
-	pub fn public_key(&self) -> Option<libp2p::identity::PublicKey> {
-		self.keypair.as_ref().map(|k| k.public())
-	}
-}
-
 pub struct SharedState {
 	pub config: Config,
 	pub shutdown_token: tokio_util::sync::CancellationToken,
-	pub consumer: ArcMutex<ConsumerState>,
+	pub rpc: ArcMutex<RpcState>,
 	pub provider: ArcMutex<ProviderState>,
 	pub database: ArcMutex<rusqlite::Connection>,
 	pub p2p: ArcMutex<P2pState>,
@@ -182,6 +185,8 @@ impl SharedState {
 				None => data_dir.join(DEFAULT_KEYPAIR_FILE_NAME),
 			};
 
+		let keypair = read_or_create_keypair(&keypair_path)?;
+
 		let server_port = user_config
 			.as_ref()
 			.and_then(|c| c.server.as_ref().and_then(|s| s.port))
@@ -202,7 +207,7 @@ impl SharedState {
 		};
 
 		let p2p_state = P2pState {
-			keypair: None,
+			keypair,
 			reqres_request_tx: p2p_reqres_request_tx,
 			stream_request_tx: p2p_stream_request_tx,
 		};
@@ -211,13 +216,14 @@ impl SharedState {
 			config,
 			shutdown_token,
 
-			consumer: to_arc_mutex(ConsumerState {
-				notification_tx: tokio::sync::broadcast::channel(32).0,
+			rpc: to_arc_mutex(RpcState {
+				event_tx: tokio::sync::broadcast::channel(32).0,
 			}),
 
 			provider: to_arc_mutex(ProviderState {
+				module_ids_counter: 0,
 				modules: HashMap::new(),
-				offers: HashMap::new(),
+				offers_module_map: HashMap::new(),
 				last_updated_at: chrono::Utc::now(),
 			}),
 

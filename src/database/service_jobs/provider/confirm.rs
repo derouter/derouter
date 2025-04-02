@@ -1,13 +1,14 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::database::{
-	service_connections::Currency,
-	service_jobs::{JobHashingPayload, hash_job},
+use crate::{
+	database::{
+		service_connections::Currency,
+		service_jobs::{JobHashingPayload, hash_job},
+	},
+	dto::JobRecord,
 };
 
-pub enum ProviderConfirmJobResult {
-	Ok,
-
+pub enum ProviderConfirmJobError {
 	/// Job not found locally.
 	JobNotFound,
 
@@ -33,9 +34,7 @@ pub enum ProviderConfirmJobResult {
 	PublicKeyDecodingFailed(libp2p::identity::DecodingError),
 
 	/// Failed to verify the provided Consumer signature.
-	SignatureVerificationFailed {
-		job_rowid: i64,
-	},
+	SignatureVerificationFailed { job_rowid: i64 },
 }
 
 /// As a Provider, confirm the Consumer's signature
@@ -48,7 +47,7 @@ pub fn provider_confirm_job(
 	job_hash: &Vec<u8>,
 	consumer_public_key: &[u8],
 	consumer_signature: &Vec<u8>,
-) -> ProviderConfirmJobResult {
+) -> Result<JobRecord, ProviderConfirmJobError> {
 	let tx = database.transaction().unwrap();
 
 	struct JobRow {
@@ -64,6 +63,11 @@ pub fn provider_confirm_job(
 		balance_delta: Option<String>,
 		rowid: i64,
 		created_at_sync: Option<i64>,
+		completed_at_local: Option<chrono::DateTime<chrono::Utc>>,
+		created_at_local: chrono::DateTime<chrono::Utc>,
+		private_payload: Option<String>,
+		offer_snapshot_rowid: i64,
+		provider_job_id: Option<String>,
 	}
 
 	let job = tx
@@ -81,7 +85,12 @@ pub fn provider_confirm_job(
 					service_jobs.public_payload,               -- #8
 					service_jobs.balance_delta,                -- #9
 					service_jobs.rowid,                        -- #10
-					service_jobs.created_at_sync               -- #11
+					service_jobs.created_at_sync,              -- #11
+					service_jobs.completed_at_local,           -- #12
+					service_jobs.created_at_local,             -- #13
+					service_jobs.private_payload,              -- #14
+					offer_snapshots.rowid,                     -- #15
+					service_jobs.provider_job_id               -- #16
 				FROM service_jobs
 				JOIN service_connections
 					ON service_connections.rowid = service_jobs.connection_rowid
@@ -106,6 +115,11 @@ pub fn provider_confirm_job(
 					balance_delta: row.get(9)?,
 					rowid: row.get(10)?,
 					created_at_sync: row.get(11)?,
+					completed_at_local: row.get(12)?,
+					created_at_local: row.get(13)?,
+					private_payload: row.get(14)?,
+					offer_snapshot_rowid: row.get(15)?,
+					provider_job_id: row.get(16)?,
 				})
 			},
 		)
@@ -115,26 +129,26 @@ pub fn provider_confirm_job(
 	let job = match job {
 		Some(job) => {
 			if job.consumer_peer_id != consumer_peer_id.to_base58() {
-				return ProviderConfirmJobResult::ConsumerPeerIdMismatch;
+				return Err(ProviderConfirmJobError::ConsumerPeerIdMismatch);
 			} else if job.signature_confirmed_at_local.is_some() {
-				return ProviderConfirmJobResult::AlreadyConfirmed;
+				return Err(ProviderConfirmJobError::AlreadyConfirmed);
 			} else if job.created_at_sync.is_none() || job.completed_at_sync.is_none()
 			{
-				return ProviderConfirmJobResult::NotCompletedYet;
+				return Err(ProviderConfirmJobError::NotCompletedYet);
 			} else if job.reason.is_some() {
-				return ProviderConfirmJobResult::AlreadyFailed;
+				return Err(ProviderConfirmJobError::AlreadyFailed);
 			}
 
 			job
 		}
 
-		None => return ProviderConfirmJobResult::JobNotFound,
+		None => return Err(ProviderConfirmJobError::JobNotFound),
 	};
 
 	let job_hashing_payload = JobHashingPayload {
 		consumer_peer_id: job.consumer_peer_id,
 		provider_peer_id: job.provider_peer_id.clone(),
-		protocol_id: job.protocol_id,
+		protocol_id: job.protocol_id.clone(),
 		offer_payload: job.offer_protocol_payload,
 		currency: job.currency.code().to_string(),
 		provider_job_id: provider_job_id.clone(),
@@ -147,25 +161,27 @@ pub fn provider_confirm_job(
 	let expected_hash = hash_job(job_hashing_payload);
 
 	if *job_hash != expected_hash {
-		return ProviderConfirmJobResult::HashMismatch {
+		return Err(ProviderConfirmJobError::HashMismatch {
 			job_rowid: job.rowid,
 			expected_hash,
-		};
+		});
 	}
 
 	match libp2p::identity::PublicKey::try_decode_protobuf(consumer_public_key) {
 		Ok(public_key) => {
 			if !public_key.verify(job_hash, consumer_signature) {
-				return ProviderConfirmJobResult::SignatureVerificationFailed {
+				return Err(ProviderConfirmJobError::SignatureVerificationFailed {
 					job_rowid: job.rowid,
-				};
+				});
 			}
 		}
 
 		Err(e) => {
-			return ProviderConfirmJobResult::PublicKeyDecodingFailed(e);
+			return Err(ProviderConfirmJobError::PublicKeyDecodingFailed(e));
 		}
 	}
+
+	let signature_confirmed_at_local = chrono::Utc::now();
 
 	let mut update_job_stmt = tx
 		.prepare_cached(
@@ -174,7 +190,7 @@ pub fn provider_confirm_job(
 					service_jobs
 				SET
 					consumer_signature = ?2,
-					signature_confirmed_at_local = CURRENT_TIMESTAMP,
+					signature_confirmed_at_local = ?3,
 					confirmation_error = NULL -- Clear the error.
 				WHERE
 					rowid = ?1
@@ -183,11 +199,34 @@ pub fn provider_confirm_job(
 		.unwrap();
 
 	update_job_stmt
-		.execute(params![job.rowid, &consumer_signature])
+		.execute(params![
+			job.rowid,
+			&consumer_signature,
+			signature_confirmed_at_local
+		])
 		.unwrap();
 
 	drop(update_job_stmt);
 	tx.commit().unwrap();
 
-	ProviderConfirmJobResult::Ok
+	Ok(JobRecord {
+		job_rowid: job.rowid,
+		provider_peer_id: provider_peer_id.to_base58(),
+		consumer_peer_id: consumer_peer_id.to_base58(),
+		offer_snapshot_rowid: job.offer_snapshot_rowid,
+		offer_protocol_id: job.protocol_id,
+		currency: job.currency,
+		balance_delta: job.balance_delta,
+		public_payload: Some(job.public_payload),
+		private_payload: job.private_payload,
+		reason: None,
+		reason_class: None,
+		created_at_local: job.created_at_local,
+		created_at_sync: job.created_at_sync,
+		completed_at_local: job.completed_at_local,
+		completed_at_sync: job.completed_at_sync,
+		signature_confirmed_at_local: Some(signature_confirmed_at_local),
+		confirmation_error: None,
+		provider_job_id: job.provider_job_id,
+	})
 }

@@ -34,8 +34,10 @@ use crate::{
 			set_confirmation_error::set_job_confirmation_error,
 		},
 	},
-	server,
-	state::{ProviderOutboundRequestEnvelope, SharedState},
+	rpc,
+	state::{
+		ProvidedOffer, ProviderOutboundRequestEnvelope, RpcEvent, SharedState,
+	},
 	util::cbor::{read_cbor, write_cbor},
 };
 
@@ -105,7 +107,7 @@ pub async fn run_p2p(
 	>,
 	mut stream_request_rx: tokio::sync::mpsc::Receiver<OutboundStreamRequest>,
 ) -> eyre::Result<()> {
-	let keypair = read_or_create_keypair(&state.config.keypair_path)?;
+	let keypair = state.p2p.lock().await.keypair.clone();
 
 	let mdns = mdns::tokio::Behaviour::new(
 		mdns::Config::default(),
@@ -179,7 +181,6 @@ pub async fn run_p2p(
 		.gossipsub
 		.subscribe(&heartbeat_topic)?;
 
-	state.p2p.lock().await.set_keypair(keypair);
 	log::info!("📡 Running w/ PeerID {}", swarm.local_peer_id());
 
 	let mut response_tx_map = HashMap::<
@@ -270,9 +271,18 @@ async fn try_send_heartbeat<T: Into<gossipsub::TopicHash>>(
 	swarm: &mut Swarm<NodeBehaviour>,
 	topic: T,
 ) -> eyre::Result<()> {
-	let lock = state.provider.lock().await;
+	let provider_lock = state.provider.lock().await;
 
-	if lock.offers.is_empty() {
+	let mut any_offers = false;
+
+	for module in provider_lock.modules.values() {
+		if !module.offers.is_empty() {
+			any_offers = true;
+			break;
+		}
+	}
+
+	if !any_offers {
 		log::debug!("No provided offers, skip heartbeat");
 		return Ok(());
 	}
@@ -280,25 +290,27 @@ async fn try_send_heartbeat<T: Into<gossipsub::TopicHash>>(
 	let mut heartbeat_offers =
 		HashMap::<String, HashMap<String, proto::gossipsub::ProviderOffer>>::new();
 
-	for (protocol_id, provided_offers_by_protocol) in &lock.offers {
-		let heartbeat_offers_by_protocol =
-			match heartbeat_offers.get_mut(protocol_id) {
-				Some(map) => map,
-				None => {
-					heartbeat_offers.insert(protocol_id.clone(), HashMap::new());
-					heartbeat_offers.get_mut(protocol_id).unwrap()
-				}
-			};
+	for module in provider_lock.modules.values() {
+		for (protocol_id, provided_offers_by_protocol) in &module.offers {
+			let heartbeat_offers_by_protocol =
+				match heartbeat_offers.get_mut(protocol_id) {
+					Some(map) => map,
+					None => {
+						heartbeat_offers.insert(protocol_id.clone(), HashMap::new());
+						heartbeat_offers.get_mut(protocol_id).unwrap()
+					}
+				};
 
-		for (offer_id, provided_offer) in provided_offers_by_protocol {
-			heartbeat_offers_by_protocol
-				.insert(
-					offer_id.clone(),
-					proto::gossipsub::ProviderOffer {
-						protocol_payload: provided_offer.protocol_payload.clone(),
-					},
-				)
-				.unwrap_none();
+			for (offer_id, provided_offer) in provided_offers_by_protocol {
+				heartbeat_offers_by_protocol
+					.insert(
+						offer_id.clone(),
+						proto::gossipsub::ProviderOffer {
+							protocol_payload: provided_offer.protocol_payload.clone(),
+						},
+					)
+					.unwrap_none();
+			}
 		}
 	}
 
@@ -308,7 +320,7 @@ async fn try_send_heartbeat<T: Into<gossipsub::TopicHash>>(
 			teaser: state.config.provider.teaser.clone(),
 			description: state.config.provider.description.clone(),
 			offers: heartbeat_offers,
-			updated_at: lock.last_updated_at,
+			updated_at: provider_lock.last_updated_at,
 		}),
 		timestamp: chrono::Utc::now(),
 	};
@@ -616,21 +628,39 @@ async fn handle_incoming_stream(
 			protocol_payload,
 			currency,
 		} => {
-			log::debug!("Locking provider...");
-			let provider = state.provider.lock().await;
-			let provided_offer = provider
-				.offers
-				.get(&protocol_id)
-				.and_then(|o| o.get(&offer_id))
-				.cloned();
-			drop(provider);
+			let provider_lock = state.provider.lock().await;
+			let mut found_offer: Option<(u32, ProvidedOffer)> = None;
+
+			if let Some(module_ids_by_protocol_id) =
+				provider_lock.offers_module_map.get(&protocol_id)
+			{
+				let module_id = module_ids_by_protocol_id.get(&offer_id);
+
+				if let Some(module_id) = module_id {
+					found_offer = Some((
+						*module_id,
+						provider_lock
+							.modules
+							.get(module_id)
+							.expect("provider module offers to be in sync")
+							.offers
+							.get(&protocol_id)
+							.expect("provider module offers to be in sync")
+							.get(&offer_id)
+							.expect("provider module offers to be in sync")
+							.clone(),
+					));
+				}
+			}
+
+			drop(provider_lock);
 
 			type ServiceConnectionHeadResponse =
 				proto::stream::ServiceConnectionHeadResponse;
 
-			let response = if let Some(ref provided_offer) = provided_offer {
+			let response = if let Some((_, ref offer)) = found_offer {
 				let provided_payload_string =
-					serde_json::to_string(&provided_offer.protocol_payload)
+					serde_json::to_string(&offer.protocol_payload)
 						.expect("should serialize provided offer payload");
 
 				if provided_payload_string == *protocol_payload {
@@ -646,7 +676,12 @@ async fn handle_incoming_stream(
 					ServiceConnectionHeadResponse::OfferNotFoundError
 				}
 			} else {
-				log::debug!("Could not find offer {} => {}", protocol_id, offer_id);
+				log::debug!(
+					r#"Could not find offer "{}" => "{}""#,
+					protocol_id,
+					offer_id
+				);
+
 				ServiceConnectionHeadResponse::OfferNotFoundError
 			};
 
@@ -656,28 +691,23 @@ async fn handle_incoming_stream(
 			log::debug!("{:?}", head_response);
 			write_cbor(&mut stream, &head_response).await??;
 
-			let mut provided_offer = match response {
+			let (module_id, mut offer) = match response {
 				proto::stream::ServiceConnectionHeadResponse::Ok => {
-					provided_offer.unwrap()
+					found_offer.unwrap()
 				}
 				_ => return Ok(()),
 			};
 
 			let mut database = state.database.lock().await;
 
-			let offer_snapshot =
-				if let Some(snapshot_rowid) = provided_offer.snapshot_rowid {
-					// If the provided offer is saved to DB, reuse its ROWID.
-					Left(snapshot_rowid)
-				} else {
-					// Otherwise, insert a new offer snapshot.
-					Right((
-						to_peer_id,
-						&offer_id,
-						&protocol_id,
-						&provided_offer.protocol_payload,
-					))
-				};
+			let offer_snapshot = if let Some(snapshot_rowid) = offer.snapshot_rowid {
+				// If the provided offer is saved to DB, reuse its ROWID.
+				Left(snapshot_rowid)
+			} else {
+				// Otherwise, insert a new offer snapshot.
+				// See `create_service_connection` for details.
+				Right((to_peer_id, &offer_id, &protocol_id, &offer.protocol_payload))
+			};
 
 			let (offer_snapshot_rowid, connection_rowid) = create_service_connection(
 				&mut database,
@@ -689,43 +719,36 @@ async fn handle_incoming_stream(
 			drop(database);
 
 			// Mark the snapshot as saved in DB.
-			provided_offer.snapshot_rowid = Some(offer_snapshot_rowid);
+			offer.snapshot_rowid = Some(offer_snapshot_rowid);
 
-			let mut provider = state.provider.lock().await;
+			let mut provider_lock = state.provider.lock().await;
 
-			let module = match provider.modules.get_mut(&provided_offer.provider_id) {
+			// The module may be gone by this moment.
+			let module = match provider_lock.modules.get_mut(&module_id) {
 				Some(x) => x,
 				None => {
-					return Err(eyre!(
-						"Provider module \"{}\" not found",
-						provided_offer.provider_id
-					));
+					return Err(eyre!("Provider module #{} is gone", module_id));
 				}
 			};
 
-			type OutboundRequestFrameData =
-				server::provider::rpc::OutboundRequestFrameData;
-
-			let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+			// We don't really care about the ACK response.
+			let (response_tx, _) = tokio::sync::oneshot::channel();
 
 			let envelope = ProviderOutboundRequestEnvelope {
-				frame_data: OutboundRequestFrameData::ProviderOpenConnection {
+				frame_data: rpc::OutboundRequestFrameData::ProviderOpenConnection {
 					customer_peer_id: from_peer_id.to_base58(),
 					protocol_id,
 					offer_id,
-					protocol_payload: provided_offer.protocol_payload,
+					protocol_payload: offer.protocol_payload,
 					connection_id: connection_rowid,
 				},
 				response_tx,
 			};
 
-			module.outbound_request_tx.try_send(envelope).map_err(|e| {
-				eyre!(
-					"per_module_outbound_request_txs[\"{}\"].send failed: {:?}",
-					provided_offer.provider_id,
-					e
-				)
-			})?;
+			module
+				.outbound_request_tx
+				.try_send(envelope)
+				.expect("module's outbound_request_tx should be healthy");
 
 			module
 				.future_service_connections
@@ -733,17 +756,14 @@ async fn handle_incoming_stream(
 				.await
 				.insert(connection_rowid, stream.into_inner());
 
-			drop(provider);
+			drop(provider_lock);
 
 			log::debug!(
-				"Provider \"{}\" service connection {} is waiting for Yamux stream",
-				provided_offer.provider_id,
+				"⏳ Provider module #{} is waiting a Yamux stream \
+					for service connection #{}...",
+				module_id,
 				connection_rowid
 			);
-
-			match response_rx.await.map_err(|e| eyre!(e))? {
-				server::provider::rpc::InboundResponseFrameData::Ack => {}
-			}
 
 			Ok(())
 		}
@@ -768,8 +788,8 @@ async fn handle_incoming_request(
 			consumer_public_key,
 			consumer_signature,
 		} => {
-			type ProviderConfirmJobResult =
-				crate::database::service_jobs::provider::confirm::ProviderConfirmJobResult;
+			type Error =
+				crate::database::service_jobs::provider::confirm::ProviderConfirmJobError;
 
 			let response = match provider_confirm_job(
 				&mut *state.database.lock().await,
@@ -780,39 +800,46 @@ async fn handle_incoming_request(
 				&consumer_public_key,
 				&consumer_signature,
 			) {
-				ProviderConfirmJobResult::Ok => ConfirmJobCompletionResponse::Ok,
+				Ok(job_record) => {
+					let _ = state
+						.rpc
+						.lock()
+						.await
+						.event_tx
+						.send(RpcEvent::JobUpdated(Box::new(job_record)));
 
-				ProviderConfirmJobResult::JobNotFound => {
+					ConfirmJobCompletionResponse::Ok
+				}
+
+				Err(Error::JobNotFound) => ConfirmJobCompletionResponse::JobNotFound,
+
+				Err(Error::ConsumerPeerIdMismatch) => {
 					ConfirmJobCompletionResponse::JobNotFound
 				}
 
-				ProviderConfirmJobResult::ConsumerPeerIdMismatch => {
-					ConfirmJobCompletionResponse::JobNotFound
-				}
-
-				ProviderConfirmJobResult::AlreadyConfirmed => {
+				Err(Error::AlreadyConfirmed) => {
 					ConfirmJobCompletionResponse::AlreadyConfirmed
 				}
 
-				ProviderConfirmJobResult::AlreadyFailed => {
+				Err(Error::AlreadyFailed) => {
 					ConfirmJobCompletionResponse::AlreadyFailed
 				}
 
-				ProviderConfirmJobResult::NotCompletedYet => {
+				Err(Error::NotCompletedYet) => {
 					ConfirmJobCompletionResponse::NotCompletedYet
 				}
 
-				ProviderConfirmJobResult::PublicKeyDecodingFailed(e) => {
+				Err(Error::PublicKeyDecodingFailed(e)) => {
 					log::debug!("Consumer public key {:?}", e);
 					ConfirmJobCompletionResponse::PublicKeyDecodingFailed
 				}
 
 				result => {
 					let (job_rowid, confirmation_error, response) = match result {
-						ProviderConfirmJobResult::HashMismatch {
+						Err(Error::HashMismatch {
 							job_rowid,
 							expected_hash,
-						} => (
+						}) => (
 							job_rowid,
 							format!(
 								"Hash mismatch (got {}, expected {})",
@@ -824,9 +851,7 @@ async fn handle_incoming_request(
 							},
 						),
 
-						ProviderConfirmJobResult::SignatureVerificationFailed {
-							job_rowid,
-						} => (
+						Err(Error::SignatureVerificationFailed { job_rowid }) => (
 							job_rowid,
 							"Signature verification failed".to_string(),
 							ConfirmJobCompletionResponse::SignatureVerificationFailed,

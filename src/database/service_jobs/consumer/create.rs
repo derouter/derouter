@@ -1,5 +1,7 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::{database::service_jobs::get::get_job, dto::JobRecord};
+
 pub enum ConsumerCreateJobError {
 	ConnectionNotFound,
 }
@@ -11,7 +13,7 @@ pub fn consumer_create_job(
 	database: &mut Connection,
 	connection_rowid: i64,
 	private_payload: Option<String>,
-) -> Result<i64, ConsumerCreateJobError> {
+) -> Result<JobRecord, ConsumerCreateJobError> {
 	let tx = database.transaction().unwrap();
 
 	let job_rowid = {
@@ -53,6 +55,8 @@ pub fn consumer_create_job(
 		tx.last_insert_rowid()
 	};
 
+	let job_record = get_job(&tx, job_rowid).unwrap();
 	tx.commit().unwrap();
-	Ok(job_rowid)
+
+	Ok(job_record)
 }

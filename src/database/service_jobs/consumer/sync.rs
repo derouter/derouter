@@ -1,7 +1,8 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub enum ConsumerUpdateJobResult {
-	Ok,
+use crate::{database::service_jobs::get::get_job, dto::JobRecord};
+
+pub enum ConsumerSyncJobError {
 	InvalidJobId,
 	AlreadySynced,
 
@@ -17,7 +18,7 @@ pub fn consumer_sync_job(
 	provider_job_id: String,
 	private_payload: Option<String>,
 	created_at_sync: i64,
-) -> ConsumerUpdateJobResult {
+) -> Result<JobRecord, ConsumerSyncJobError> {
 	let tx = database.transaction().unwrap();
 
 	struct JobRow {
@@ -44,11 +45,11 @@ pub fn consumer_sync_job(
 	match job {
 		Some(job) => {
 			if job.provider_job_id.is_some() {
-				return ConsumerUpdateJobResult::AlreadySynced;
+				return Err(ConsumerSyncJobError::AlreadySynced);
 			}
 		}
 
-		None => return ConsumerUpdateJobResult::InvalidJobId,
+		None => return Err(ConsumerSyncJobError::InvalidJobId),
 	};
 
 	let mut update_job_stmt = tx
@@ -61,8 +62,8 @@ pub fn consumer_sync_job(
 
 					-- Only update `private_payload`
 					-- if the argument is not NULL.
-					private_payload = CASE ?3
-						WHEN ?3 IS NOT NULL THEN ?3
+					private_payload = CASE
+						WHEN (?3 IS NOT NULL) THEN ?3
 						ELSE private_payload
 						END,
 
@@ -83,7 +84,9 @@ pub fn consumer_sync_job(
 		.unwrap();
 
 	drop(update_job_stmt);
+
+	let job_record = get_job(&tx, job_rowid).unwrap();
 	tx.commit().unwrap();
 
-	ConsumerUpdateJobResult::Ok
+	Ok(job_record)
 }

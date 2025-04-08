@@ -97,7 +97,7 @@ pub fn query_active_offers(
 		sql += &format!(" AND provider_peer_id IN rarray(?{})", params.len());
 	}
 
-	log::debug!("{} {:?}", sql, params);
+	log::trace!("{} {:?}", sql, params);
 	let mut stmt = database.prepare_cached(&sql).unwrap();
 
 	let offer_snapshots = stmt

@@ -106,31 +106,41 @@ pub enum InboundFrame {
 	Response(InboundResponseFrame),
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, derive_more::Debug)]
 #[serde(tag = "type", content = "data")]
 pub enum OutboundRequestFrameData {
 	EventOfferRemoved {
 		subscription_id: u32,
+
+		#[debug(skip)]
 		payload: OfferRemoved,
 	},
 
 	EventOfferUpdated {
 		subscription_id: u32,
+
+		#[debug(skip)]
 		payload: OfferSnapshot,
 	},
 
 	EventProviderHeartbeat {
 		subscription_id: u32,
+
+		#[debug(skip)]
 		payload: ProviderHeartbeat,
 	},
 
 	EventProviderUpdated {
 		subscription_id: u32,
+
+		#[debug(skip)]
 		payload: ProviderRecord,
 	},
 
 	EventJobUpdated {
 		subscription_id: u32,
+
+		#[debug(skip)]
 		payload: Box<JobRecord>,
 	},
 
@@ -138,7 +148,10 @@ pub enum OutboundRequestFrameData {
 		customer_peer_id: String,
 		protocol_id: String,
 		offer_id: String,
+
+		#[debug(skip)]
 		protocol_payload: String,
+
 		connection_id: i64,
 	},
 }

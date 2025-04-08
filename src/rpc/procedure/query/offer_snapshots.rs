@@ -17,10 +17,10 @@ pub struct OfferSnapshotsQueryRequest {
 	snapshot_ids: Vec<i64>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, derive_more::Debug)]
 #[serde(tag = "tag", content = "content")]
 pub enum OfferSnapshotsQueryResponse {
-	Ok(Vec<OfferSnapshot>),
+	Ok(#[debug(skip)] Vec<OfferSnapshot>),
 	Length,
 }
 

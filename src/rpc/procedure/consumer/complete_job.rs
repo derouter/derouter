@@ -14,7 +14,7 @@ use crate::{
 
 /// Mark a previously [synchronized](SyncJob) job as completed.
 /// Shall call [ConfirmJobCompletion] afterwards.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, derive_more::Debug)]
 pub struct ConsumerCompleteJobRequest {
 	/// Job ID returned by [`CreateJob`].
 	database_job_id: i64,
@@ -26,10 +26,12 @@ pub struct ConsumerCompleteJobRequest {
 	balance_delta: Option<String>,
 
 	/// Publicly-available job payload.
+	#[debug(skip)]
 	public_payload: String,
 
 	/// Private, local-stored payload.
 	/// Would override if already set.
+	#[debug(skip)]
 	private_payload: Option<String>,
 }
 

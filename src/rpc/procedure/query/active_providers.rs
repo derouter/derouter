@@ -16,10 +16,10 @@ use crate::{
 #[derive(Deserialize, Debug)]
 pub struct ActiveProvidersQueryRequest {}
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, derive_more::Debug)]
 #[serde(tag = "tag", content = "content")]
 pub enum ActiveProvidersQueryResponse {
-	Ok(Vec<String>),
+	Ok(#[debug(skip)] Vec<String>),
 }
 
 impl Connection {

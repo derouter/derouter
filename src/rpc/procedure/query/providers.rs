@@ -19,10 +19,10 @@ pub struct ProvidersQueryRequest {
 	provider_peer_ids: Vec<String>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, derive_more::Debug)]
 #[serde(tag = "tag", content = "content")]
 pub enum ProvidersQueryResponse {
-	Ok(Vec<ProviderRecord>),
+	Ok(#[debug(skip)] Vec<ProviderRecord>),
 	InvalidPeerId(String),
 	Length,
 }

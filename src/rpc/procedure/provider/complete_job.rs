@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// Mark a job as completed, locally.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, derive_more::Debug)]
 pub struct ProviderCompleteJobRequest {
 	/// Local job ID.
 	database_job_id: i64,
@@ -22,10 +22,12 @@ pub struct ProviderCompleteJobRequest {
 
 	/// Potentially-publicly-accessible job payload,
 	/// to be signed by the Consumer.
+	#[debug(skip)]
 	public_payload: String,
 
 	/// Private job payload, stored locally.
 	/// Would override if already set.
+	#[debug(skip)]
 	private_payload: Option<String>,
 }
 

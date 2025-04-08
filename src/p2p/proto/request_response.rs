@@ -11,7 +11,7 @@ pub enum Request {
 	},
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, derive_more::Debug, Clone)]
 pub enum ConfirmJobCompletionResponse {
 	Ok,
 
@@ -26,6 +26,7 @@ pub enum ConfirmJobCompletionResponse {
 
 	/// Job hash mismatch.
 	HashMismatch {
+		#[debug("{}", hex::encode(expected))]
 		expected: Vec<u8>,
 	},
 

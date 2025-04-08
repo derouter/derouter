@@ -23,10 +23,10 @@ pub struct ActiveOffersQueryRequest {
 	provider_peer_ids: Option<Vec<String>>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, derive_more::Debug)]
 #[serde(tag = "tag", content = "content")]
 pub enum ActiveOffersQueryResponse {
-	Ok(Vec<OfferSnapshot>),
+	Ok(#[debug(skip)] Vec<OfferSnapshot>),
 	InvalidPeerId(String),
 }
 

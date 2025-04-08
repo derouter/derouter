@@ -32,10 +32,10 @@ pub struct JobsQueryRequest {
 	limit: i64,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, derive_more::Debug)]
 #[serde(tag = "tag", content = "content")]
 pub enum JobsQueryResponse {
-	Ok(Vec<JobRecord>),
+	Ok(#[debug(skip)] Vec<JobRecord>),
 	InvalidPeerId(String),
 	InvalidLimit,
 }

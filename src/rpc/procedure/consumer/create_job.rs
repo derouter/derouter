@@ -16,12 +16,13 @@ use crate::{
 /// may be used to record pre-response Provider errors,
 /// when its `provider_job_id` is not yet known.
 /// Shall call [SyncJob] before [CompleteJob].
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, derive_more::Debug)]
 pub struct ConsumerCreateJobRequest {
 	/// The associated connection ID.
 	connection_id: i64,
 
 	/// Private job payload, stored locally.
+	#[debug(skip)]
 	private_payload: Option<String>,
 }
 

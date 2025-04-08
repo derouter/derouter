@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Mark a job as failed, locally.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, derive_more::Debug)]
 pub struct ProviderFailJobRequest {
 	/// Local job ID.
 	database_job_id: i64,
@@ -24,6 +24,7 @@ pub struct ProviderFailJobRequest {
 
 	/// Private job payload, stored locally.
 	/// Would override if already set.
+	#[debug(skip)]
 	private_payload: Option<String>,
 }
 

@@ -13,12 +13,13 @@ use crate::{
 
 /// Create a new incomplete service job
 /// associated with given connection, locally.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, derive_more::Debug)]
 pub struct ProviderCreateJobRequest {
 	/// Local connection ID.
 	connection_id: i64,
 
 	/// Private job payload, stored locally.
+	#[debug(skip)]
 	private_payload: Option<String>,
 }
 

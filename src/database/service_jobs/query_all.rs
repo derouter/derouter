@@ -100,7 +100,7 @@ pub fn query_jobs(
 	sql += &format!("\nLIMIT ?{}", params.len() + 1);
 	params.push(Param::Single(Value::from(limit)));
 
-	log::debug!("{} {:?}", sql, params);
+	log::trace!("{} {:?}", sql, params);
 	let mut stmt = database.prepare_cached(&sql).unwrap();
 
 	let jobs = stmt

@@ -14,10 +14,12 @@ use crate::{
 };
 
 /// Provide an offer until the RPC connection shuts down.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, derive_more::Debug)]
 pub struct ProviderProvideRequest {
 	protocol_id: String,
 	offer_id: String,
+
+	#[debug(skip)]
 	protocol_payload: String,
 }
 

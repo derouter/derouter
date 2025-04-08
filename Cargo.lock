@@ -1000,6 +1000,7 @@ dependencies = [
  "alloy-primitives",
  "chrono",
  "clap",
+ "derive_more",
  "directories",
  "either",
  "eyre",

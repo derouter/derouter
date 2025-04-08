@@ -325,12 +325,12 @@ async fn try_send_heartbeat<T: Into<gossipsub::TopicHash>>(
 		timestamp: chrono::Utc::now(),
 	};
 
-	log::debug!("Sending {:?}", message);
+	log::trace!("Sending {:?}", message);
 	let buffer = serde_cbor::to_vec(&message).unwrap();
 
 	match swarm.behaviour_mut().gossipsub.publish(topic, buffer) {
 		Ok(_) => {
-			log::debug!("🫀 Sent heartbeat");
+			log::debug!("🫀 Sent heartbeat at {}", message.timestamp);
 			Ok(())
 		}
 
@@ -421,7 +421,10 @@ async fn handle_event<T: Into<gossipsub::TopicHash>>(
 							response,
 						} => {
 							log::debug!(
-								"ReqRes Response {{ peer: {peer}, connection_id: {connection_id}, request_id: {request_id}, response: {:?} }}",
+								"ReqRes incoming Response {{ peer: {peer}, \
+									connection_id: {connection_id}, \
+									request_id: {request_id}, \
+									response: {:?} }}",
 								response
 							);
 
@@ -475,7 +478,7 @@ async fn handle_event<T: Into<gossipsub::TopicHash>>(
 									&message.data,
 								) {
 									Ok(heartbeat) => {
-										log::debug!("🫀 Got {:?}", heartbeat);
+										log::trace!("🫀 Got {:?}", heartbeat);
 
 										if let Err(e) =
 											handle_heartbeat(state, source, heartbeat).await
@@ -882,10 +885,16 @@ async fn handle_incoming_request(
 				}
 			};
 
-			match swarm.behaviour_mut().request_response.send_response(
-				channel,
-				proto::request_response::Response::ConfirmJobCompletion(response),
-			) {
+			let response =
+				proto::request_response::Response::ConfirmJobCompletion(response);
+
+			log::debug!("{response:?}");
+
+			match swarm
+				.behaviour_mut()
+				.request_response
+				.send_response(channel, response)
+			{
 				Ok(_) => {}
 				Err(response) => {
 					log::warn!("Failed to send {:?}", response)

@@ -512,8 +512,6 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<SharedState>) {
 
 						match response.data {
 							InboundResponseFrameData::Ack => {
-								log::debug!("inbound_response_txs.remove({})", response.id);
-
 								if let Some(inbound_response_tx) = inbound_response_txs.remove(&response.id) {
 									let _ = inbound_response_tx.send(response.data);
 								} else {
@@ -551,8 +549,6 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<SharedState>) {
 
 			envelope = provider_outbound_request_rx.recv() => {
 				if let Some(envelope) = envelope {
-					log::debug!("inbound_response_txs.insert({}, ...)", outbound_requests_counter);
-
 					inbound_response_txs.insert(
 						outbound_requests_counter,
 						envelope.response_tx

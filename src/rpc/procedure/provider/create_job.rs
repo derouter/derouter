@@ -50,7 +50,7 @@ impl Connection {
 			crate::db::service_jobs::provider::create::ProviderCreateJobError;
 
 		let response = match provider_create_job(
-			&mut *self.state.database.lock().await,
+			&mut *self.state.db.lock().await,
 			request_data.connection_id,
 			request_data.private_payload,
 		) {

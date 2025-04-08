@@ -139,7 +139,7 @@ pub struct SharedState {
 	pub shutdown_token: tokio_util::sync::CancellationToken,
 	pub rpc: ArcMutex<RpcState>,
 	pub provider: ArcMutex<ProviderState>,
-	pub database: ArcMutex<rusqlite::Connection>,
+	pub db: ArcMutex<rusqlite::Connection>,
 	pub p2p: ArcMutex<P2pState>,
 }
 
@@ -225,7 +225,7 @@ impl SharedState {
 				last_updated_at: chrono::Utc::now(),
 			}),
 
-			database: to_arc_mutex(database),
+			db: to_arc_mutex(database),
 			p2p: to_arc_mutex(p2p_state),
 		})
 	}

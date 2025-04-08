@@ -160,7 +160,7 @@ impl Node {
 					_ => return Ok(()),
 				};
 
-				let mut database = state.database.lock().await;
+				let mut conn = state.db.lock().await;
 
 				let offer_snapshot = if let Some(snapshot_rowid) = offer.snapshot_rowid
 				{
@@ -174,13 +174,13 @@ impl Node {
 
 				let (offer_snapshot_rowid, connection_rowid) =
 					create_service_connection(
-						&mut database,
+						&mut conn,
 						offer_snapshot,
 						from_peer_id,
 						currency,
 					);
 
-				drop(database);
+				drop(conn);
 
 				// Mark the snapshot as saved in DB.
 				offer.snapshot_rowid = Some(offer_snapshot_rowid);

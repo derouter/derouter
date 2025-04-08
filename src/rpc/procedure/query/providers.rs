@@ -56,7 +56,7 @@ impl Connection {
 			};
 
 			ProvidersQueryResponse::Ok(query_providers_by_peer_id(
-				&*self.state.database.lock().await,
+				&*self.state.db.lock().await,
 				provider_peer_ids.as_ref(),
 			))
 		};

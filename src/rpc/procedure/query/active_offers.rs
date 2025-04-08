@@ -58,7 +58,7 @@ impl Connection {
 				};
 
 			ActiveOffersQueryResponse::Ok(query_active_offers(
-				&*self.state.database.lock().await,
+				&*self.state.db.lock().await,
 				request_data.protocol_ids.as_deref(),
 				provider_peer_ids.as_deref(),
 			))

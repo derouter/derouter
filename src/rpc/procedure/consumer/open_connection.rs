@@ -48,7 +48,7 @@ impl Connection {
 		request_id: u32,
 		request_data: ConsumerOpenConnectionRequest,
 	) {
-		let database_lock = self.state.database.lock().await;
+		let conn = self.state.db.lock().await;
 
 		#[derive(Clone)]
 		struct OfferSnapshot {
@@ -59,7 +59,7 @@ impl Connection {
 		}
 
 		// REFACTOR: Move to the database mod.
-		let offer_snapshot = database_lock
+		let offer_snapshot = conn
 			.query_row(
 				r#"
 				SELECT
@@ -89,7 +89,7 @@ impl Connection {
 			.optional()
 			.unwrap();
 
-		drop(database_lock);
+		drop(conn);
 
 		if let Some(offer_snapshot) = offer_snapshot {
 			let provider_peer_id = offer_snapshot.provider_peer_id;
@@ -144,7 +144,7 @@ impl Connection {
 												//
 
 												let (_, connection_rowid) = create_service_connection(
-													&mut *state.database.lock().await,
+													&mut *state.db.lock().await,
 													Left(request_data.offer_snapshot_id),
 													consumer_peer_id,
 													request_data.currency,

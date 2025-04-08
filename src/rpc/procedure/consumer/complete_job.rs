@@ -70,7 +70,7 @@ impl Connection {
 
 		let response = {
 			match consumer_complete_job(
-				&mut *self.state.database.lock().await,
+				&mut *self.state.db.lock().await,
 				public_key.to_peer_id().to_base58(),
 				request_data.database_job_id,
 				request_data.balance_delta,

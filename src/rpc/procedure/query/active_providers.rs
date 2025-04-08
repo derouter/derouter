@@ -29,7 +29,7 @@ impl Connection {
 		_request_data: &ActiveProvidersQueryRequest,
 	) {
 		let response = ActiveProvidersQueryResponse::Ok(query_active_providers(
-			&*self.state.database.lock().await,
+			&*self.state.db.lock().await,
 			Duration::from_secs(60),
 		));
 

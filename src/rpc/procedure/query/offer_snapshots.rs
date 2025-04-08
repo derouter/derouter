@@ -36,7 +36,7 @@ impl Connection {
 			}
 
 			OfferSnapshotsQueryResponse::Ok(query_offer_snapshots_by_rowid(
-				&*self.state.database.lock().await,
+				&*self.state.db.lock().await,
 				&request_data.snapshot_ids,
 			))
 		};

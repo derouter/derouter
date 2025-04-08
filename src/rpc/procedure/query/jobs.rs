@@ -92,7 +92,7 @@ impl Connection {
 				};
 
 			JobsQueryResponse::Ok(query_jobs(
-				&mut *self.state.database.lock().await,
+				&mut *self.state.db.lock().await,
 				request_data.database_row_id_cursor,
 				request_data.protocol_ids.as_deref(),
 				provider_peer_ids.as_deref(),

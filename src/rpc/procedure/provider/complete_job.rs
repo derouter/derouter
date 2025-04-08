@@ -51,7 +51,7 @@ impl Connection {
 			crate::db::service_jobs::provider::complete::ProviderCompleteJobError;
 
 		let response = match provider_complete_job(
-			&mut *self.state.database.lock().await,
+			&mut *self.state.db.lock().await,
 			request_data.database_job_id,
 			request_data.balance_delta,
 			request_data.private_payload,

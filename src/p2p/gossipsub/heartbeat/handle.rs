@@ -21,8 +21,8 @@ impl Node {
 		// REFACTOR: Try flattening the block.
 		// See https://github.com/rust-lang/rust/issues/97331#issuecomment-2746121745.
 		{
-			let mut database = self.state.database.lock().await;
-			let tx = database.transaction().unwrap();
+			let mut conn = self.state.db.lock().await;
+			let tx = conn.transaction().unwrap();
 
 			struct Peer {
 				their_provider_updated_at: Option<chrono::DateTime<chrono::Utc>>,

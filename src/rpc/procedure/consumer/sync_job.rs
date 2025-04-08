@@ -51,7 +51,7 @@ impl Connection {
 		type Error = crate::db::service_jobs::consumer::sync::ConsumerSyncJobError;
 
 		let response = match consumer_sync_job(
-			&mut *self.state.database.lock().await,
+			&mut *self.state.db.lock().await,
 			request_data.database_job_id,
 			request_data.provider_job_id,
 			request_data.private_payload,

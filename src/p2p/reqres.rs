@@ -127,10 +127,10 @@ impl Node {
 				type Error =
 					crate::db::service_jobs::provider::confirm::ProviderConfirmJobError;
 
-				let mut db = self.state.database.lock().await;
+				let mut conn = self.state.db.lock().await;
 
 				let response = match provider_confirm_job(
-					&mut db,
+					&mut conn,
 					&from_peer_id,
 					&our_peer_id,
 					&provider_job_id,
@@ -202,7 +202,7 @@ impl Node {
 						type SetJobConfirmationErrorResult = crate::db::service_jobs::set_confirmation_error::SetJobConfirmationErrorResult;
 
 						match set_job_confirmation_error(
-							&mut db,
+							&mut conn,
 							job_rowid,
 							&confirmation_error,
 						) {

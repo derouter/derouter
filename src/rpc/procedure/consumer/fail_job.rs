@@ -46,7 +46,7 @@ impl Connection {
 		type Error = crate::db::service_jobs::fail::FailJobError;
 
 		let response = match fail_job(
-			&mut *self.state.database.lock().await,
+			&mut *self.state.db.lock().await,
 			request_data.database_job_id,
 			request_data.reason,
 			request_data.reason_class,

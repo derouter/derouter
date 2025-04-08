@@ -59,7 +59,7 @@ impl Connection {
 		type Result = crate::db::service_jobs::consumer::get_unconfirmed::ConsumerGetCompletedJobResult;
 
 		let response = match consumer_get_unconfirmed_job(
-			&mut *self.state.database.lock().await,
+			&mut *self.state.db.lock().await,
 			request_data.database_job_id,
 		) {
 			Result::Ok {
@@ -173,10 +173,7 @@ async fn p2p_confirm_job_completion(
 					type Error =
 						crate::db::service_jobs::consumer::confirm::ConsumerConfirmJobError;
 
-					match consumer_confirm_job(
-						&mut *state.database.lock().await,
-						job_rowid,
-					) {
+					match consumer_confirm_job(&mut *state.db.lock().await, job_rowid) {
 						Ok(job_record) => {
 							let _ = state
 								.rpc
@@ -222,7 +219,7 @@ async fn p2p_confirm_job_completion(
 					let confirmation_error = format!("{:?}", error);
 
 					match set_job_confirmation_error(
-						&mut *state.database.lock().await,
+						&mut *state.db.lock().await,
 						job_rowid,
 						&confirmation_error,
 					) {

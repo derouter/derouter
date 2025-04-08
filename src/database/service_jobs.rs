@@ -24,17 +24,17 @@ struct JobHashingPayload {
 	balance_delta: Option<String>,
 }
 
-fn hash_job(job: JobHashingPayload) -> Vec<u8> {
+fn hash_job(job: &JobHashingPayload) -> Vec<u8> {
 	let mut hasher = sha2::Sha256::new();
 
-	sha2::Digest::update(&mut hasher, job.consumer_peer_id);
-	sha2::Digest::update(&mut hasher, job.provider_peer_id);
-	sha2::Digest::update(&mut hasher, job.protocol_id);
-	sha2::Digest::update(&mut hasher, job.offer_payload);
-	sha2::Digest::update(&mut hasher, job.currency);
-	sha2::Digest::update(&mut hasher, job.provider_job_id);
+	sha2::Digest::update(&mut hasher, &job.consumer_peer_id);
+	sha2::Digest::update(&mut hasher, &job.provider_peer_id);
+	sha2::Digest::update(&mut hasher, &job.protocol_id);
+	sha2::Digest::update(&mut hasher, &job.offer_payload);
+	sha2::Digest::update(&mut hasher, &job.currency);
+	sha2::Digest::update(&mut hasher, &job.provider_job_id);
 	sha2::Digest::update(&mut hasher, job.job_created_at_sync.to_string());
-	sha2::Digest::update(&mut hasher, job.job_public_payload);
+	sha2::Digest::update(&mut hasher, &job.job_public_payload);
 	sha2::Digest::update(&mut hasher, job.job_completed_at_sync.to_string());
 
 	if let Some(balance_delta) = &job.balance_delta {

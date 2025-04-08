@@ -158,7 +158,7 @@ pub fn provider_confirm_job(
 		job_created_at_sync: job.created_at_sync.unwrap(),
 	};
 
-	let expected_hash = hash_job(job_hashing_payload);
+	let expected_hash = hash_job(&job_hashing_payload);
 
 	if *job_hash != expected_hash {
 		return Err(ProviderConfirmJobError::HashMismatch {

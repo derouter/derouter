@@ -126,7 +126,8 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 		balance_delta: balance_delta.as_ref().map(hex::encode),
 	};
 
-	let job_hash = hash_job(job_hashing_payload);
+	let job_hash = hash_job(&job_hashing_payload);
+
 	let consumer_signature = sign_fn(&job_hash);
 	let completed_at_local = chrono::Utc::now();
 

@@ -588,7 +588,9 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<SharedState>) {
 		}
 	}
 
-	if let Some(provider_module_id) = provider_module_id {
+	log::debug!("Closing connection...");
+
+	if let Some(provider_module_id) = connection.provider_module_id {
 		log::debug!("Cleaning up provider module #{}...", provider_module_id);
 		let mut provider_lock = state.provider.lock().await;
 

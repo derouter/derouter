@@ -10,7 +10,7 @@ use crate::{
 		},
 		set_confirmation_error::set_job_confirmation_error,
 	},
-	p2p::{self, OutboundReqResRequestEnvelope},
+	p2p,
 	rpc::{
 		connection::Connection,
 		procedure::{
@@ -142,7 +142,7 @@ async fn p2p_confirm_job_completion(
 ) {
 	let (response_tx, response_rx) = tokio::sync::oneshot::channel();
 
-	let reqres_request = OutboundReqResRequestEnvelope {
+	let reqres_request = p2p::reqres::OutboundRequestEnvelope {
 		request: p2p::proto::request_response::Request::ConfirmJobCompletion {
 			provider_job_id,
 			job_hash,

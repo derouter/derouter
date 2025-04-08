@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use clap::Parser as _;
-use p2p::{OutboundReqResRequestEnvelope, OutboundStreamRequest};
 use serde::{Deserialize, Serialize};
 use state::SharedState;
 use util::to_arc;
@@ -70,10 +69,10 @@ async fn main() -> eyre::Result<()> {
 	let shutdown_token = tokio_util::sync::CancellationToken::new();
 
 	let (p2p_reqres_request_tx, p2p_reqres_request_rx) =
-		tokio::sync::mpsc::channel::<OutboundReqResRequestEnvelope>(32);
+		tokio::sync::mpsc::channel::<p2p::reqres::OutboundRequestEnvelope>(32);
 
 	let (p2p_stream_request_tx, p2p_stream_request_rx) =
-		tokio::sync::mpsc::channel::<OutboundStreamRequest>(32);
+		tokio::sync::mpsc::channel::<p2p::stream::OutboundStreamRequest>(32);
 
 	let state = to_arc(SharedState::new(
 		&config,
@@ -96,8 +95,7 @@ async fn main() -> eyre::Result<()> {
 
 	let p2p_handle = tracker.spawn(async move {
 		if let Err(e) =
-			p2p::run_p2p(state_clone, p2p_reqres_request_rx, p2p_stream_request_rx)
-				.await
+			p2p::run(state_clone, p2p_reqres_request_rx, p2p_stream_request_rx).await
 		{
 			log::error!("{:?}", e);
 			shutdown_token_clone.cancel();

@@ -7,7 +7,7 @@ use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use crate::{
 	database::{create_service_connection, service_connections::Currency},
-	p2p::{self, OutboundStreamRequestResult},
+	p2p,
 	rpc::{
 		connection::Connection,
 		procedure::{
@@ -99,14 +99,15 @@ impl Connection {
 			let future_connections = self.future_connections.clone();
 
 			tokio::spawn(async move {
-				let (p2p_stream_tx, p2p_stream_rx) =
-					tokio::sync::oneshot::channel::<OutboundStreamRequestResult>();
+				let (p2p_stream_tx, p2p_stream_rx) = tokio::sync::oneshot::channel::<
+					p2p::stream::OutboundStreamRequestResult,
+				>();
 
 				let stream_request_tx =
 					state.p2p.lock().await.stream_request_tx.clone();
 
 				stream_request_tx
-					.try_send(p2p::OutboundStreamRequest {
+					.try_send(p2p::stream::OutboundStreamRequest {
 						target_peer_id: provider_peer_id,
 						head_request: p2p::proto::stream::HeadRequest::ServiceConnection {
 							protocol_id: offer_snapshot.protocol_id,

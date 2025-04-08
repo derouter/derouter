@@ -8,11 +8,7 @@ use crate::{
 	dto::{
 		JobRecord, OfferRemoved, OfferSnapshot, ProviderHeartbeat, ProviderRecord,
 	},
-	p2p::{
-		OutboundReqResRequestEnvelope, OutboundStreamRequest,
-		read_or_create_keypair,
-	},
-	rpc,
+	p2p, rpc,
 	util::{ArcMutex, to_arc_mutex},
 };
 
@@ -132,10 +128,11 @@ pub struct P2pState {
 	/// Channel for outbound ReqRes requests.
 	#[allow(dead_code)]
 	pub reqres_request_tx:
-		tokio::sync::mpsc::Sender<OutboundReqResRequestEnvelope>,
+		tokio::sync::mpsc::Sender<p2p::reqres::OutboundRequestEnvelope>,
 
 	/// Channel for outbound stream requests.
-	pub stream_request_tx: tokio::sync::mpsc::Sender<OutboundStreamRequest>,
+	pub stream_request_tx:
+		tokio::sync::mpsc::Sender<p2p::stream::OutboundStreamRequest>,
 }
 
 pub struct SharedState {
@@ -152,9 +149,11 @@ impl SharedState {
 		user_config: &Option<UserConfig>,
 		shutdown_token: tokio_util::sync::CancellationToken,
 		p2p_reqres_request_tx: tokio::sync::mpsc::Sender<
-			OutboundReqResRequestEnvelope,
+			p2p::reqres::OutboundRequestEnvelope,
 		>,
-		p2p_stream_request_tx: tokio::sync::mpsc::Sender<OutboundStreamRequest>,
+		p2p_stream_request_tx: tokio::sync::mpsc::Sender<
+			p2p::stream::OutboundStreamRequest,
+		>,
 	) -> eyre::Result<Self> {
 		let data_dir = match user_config.as_ref().and_then(|c| c.data_dir.clone()) {
 			Some(path) => path,
@@ -185,7 +184,7 @@ impl SharedState {
 				None => data_dir.join(DEFAULT_KEYPAIR_FILE_NAME),
 			};
 
-		let keypair = read_or_create_keypair(&keypair_path)?;
+		let keypair = p2p::read_or_create_keypair(&keypair_path)?;
 
 		let server_port = user_config
 			.as_ref()

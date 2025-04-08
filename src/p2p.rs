@@ -790,8 +790,10 @@ async fn handle_incoming_request(
 			type Error =
 				crate::database::service_jobs::provider::confirm::ProviderConfirmJobError;
 
+			let mut db = state.database.lock().await;
+
 			let response = match provider_confirm_job(
-				&mut *state.database.lock().await,
+				&mut db,
 				&from_peer_id,
 				&our_peer_id,
 				&provider_job_id,
@@ -862,7 +864,7 @@ async fn handle_incoming_request(
 					type SetJobConfirmationErrorResult = crate::database::service_jobs::set_confirmation_error::SetJobConfirmationErrorResult;
 
 					match set_job_confirmation_error(
-						&mut *state.database.lock().await,
+						&mut db,
 						job_rowid,
 						&confirmation_error,
 					) {

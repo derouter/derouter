@@ -14,7 +14,7 @@ pub mod service_connections;
 pub mod service_jobs;
 
 static DB_MIGRATIONS_DIR: Dir =
-	include_dir!("$CARGO_MANIFEST_DIR/db/migrations");
+	include_dir!("$CARGO_MANIFEST_DIR/src/database/migrations");
 
 static DB_MIGRATIONS: LazyLock<Migrations<'static>> =
 	LazyLock::new(|| Migrations::from_directory(&DB_MIGRATIONS_DIR).unwrap());

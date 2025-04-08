@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	database::providers::query_active_providers,
+	db::providers::query_active_providers,
 	rpc::{
 		connection::Connection,
 		procedure::{

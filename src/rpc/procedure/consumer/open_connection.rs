@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use crate::{
-	database::{create_service_connection, service_connections::Currency},
+	db::{create_service_connection, service_connections::Currency},
 	p2p,
 	rpc::{
 		connection::Connection,

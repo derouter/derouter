@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::database::service_connections::Currency;
+use crate::db::service_connections::Currency;
 
 #[derive(Serialize, Debug, Clone)]
 pub struct ProviderHeartbeat {

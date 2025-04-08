@@ -1,7 +1,7 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
-	database::{
+	db::{
 		service_connections::Currency,
 		service_jobs::{get::get_job, validate_balance_delta},
 	},
@@ -17,13 +17,13 @@ pub enum ProviderCompleteJobError {
 
 /// Mark a job as completed, locally.
 pub fn provider_complete_job(
-	database: &mut Connection,
+	conn: &mut Connection,
 	job_rowid: i64,
 	balance_delta: Option<String>,
 	private_payload: Option<String>,
 	public_payload: String,
 ) -> Result<JobRecord, ProviderCompleteJobError> {
-	let tx = database.transaction().unwrap();
+	let tx = conn.transaction().unwrap();
 
 	{
 		struct JobRow {

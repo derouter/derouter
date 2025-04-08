@@ -3,8 +3,7 @@ use std::{collections::HashMap, fs::create_dir_all, path::PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	UserConfig, UserProviderConfig,
-	database::open_database,
+	UserConfig, UserProviderConfig, db,
 	dto::{
 		JobRecord, OfferRemoved, OfferSnapshot, ProviderHeartbeat, ProviderRecord,
 	},
@@ -176,7 +175,7 @@ impl SharedState {
 				None => data_dir.join(DEFAULT_DB_NAME),
 			};
 
-		let database = open_database(&database_path)?;
+		let database = db::open(&database_path)?;
 
 		let keypair_path =
 			match user_config.as_ref().and_then(|c| c.keypair_path.clone()) {

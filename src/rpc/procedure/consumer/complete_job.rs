@@ -2,7 +2,7 @@ use futures::executor::block_on;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	database::service_jobs::consumer::complete::consumer_complete_job,
+	db::service_jobs::consumer::complete::consumer_complete_job,
 	rpc::{
 		connection::Connection,
 		procedure::{
@@ -61,7 +61,8 @@ impl Connection {
 		request_id: u32,
 		request_data: ConsumerCompleteJobRequest,
 	) {
-		type Error = crate::database::service_jobs::consumer::complete::ConsumerCompleteJobError;
+		type Error =
+			crate::db::service_jobs::consumer::complete::ConsumerCompleteJobError;
 
 		let p2p_lock = self.state.p2p.lock().await;
 		let public_key = p2p_lock.keypair.public();

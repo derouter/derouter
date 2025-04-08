@@ -3,12 +3,12 @@ use std::rc::Rc;
 use rusqlite::{Connection, params_from_iter, types::Value};
 
 use crate::{
-	database::{Param, service_connections::Currency},
+	db::{Param, service_connections::Currency},
 	dto::JobRecord,
 };
 
 pub fn query_jobs(
-	database: &mut Connection,
+	conn: &mut Connection,
 	rowid_cursor: Option<i64>,
 	protocol_ids: Option<&[String]>,
 	provider_peer_ids: Option<&[libp2p::PeerId]>,
@@ -101,7 +101,7 @@ pub fn query_jobs(
 	params.push(Param::Single(Value::from(limit)));
 
 	log::trace!("{} {:?}", sql, params);
-	let mut stmt = database.prepare_cached(&sql).unwrap();
+	let mut stmt = conn.prepare_cached(&sql).unwrap();
 
 	let jobs = stmt
 		.query_map(params_from_iter(params), |row| {

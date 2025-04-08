@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	database::service_jobs::fail::fail_job,
+	db::service_jobs::fail::fail_job,
 	rpc::{
 		connection::Connection,
 		procedure::{
@@ -43,7 +43,7 @@ impl Connection {
 		request_id: u32,
 		request_data: ProviderFailJobRequest,
 	) {
-		type Error = crate::database::service_jobs::fail::FailJobError;
+		type Error = crate::db::service_jobs::fail::FailJobError;
 
 		let response = match fail_job(
 			&mut *self.state.database.lock().await,

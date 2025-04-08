@@ -1,7 +1,7 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
-	database::{
+	db::{
 		service_connections::Currency,
 		service_jobs::{JobHashingPayload, hash_job},
 	},
@@ -40,7 +40,7 @@ pub enum ProviderConfirmJobError {
 /// As a Provider, confirm the Consumer's signature
 /// on a [previously completed](provider_complete_job) job.
 pub fn provider_confirm_job(
-	database: &mut Connection,
+	conn: &mut Connection,
 	consumer_peer_id: &libp2p::PeerId,
 	provider_peer_id: &libp2p::PeerId,
 	provider_job_id: &String,
@@ -48,7 +48,7 @@ pub fn provider_confirm_job(
 	consumer_public_key: &[u8],
 	consumer_signature: &Vec<u8>,
 ) -> Result<JobRecord, ProviderConfirmJobError> {
-	let tx = database.transaction().unwrap();
+	let tx = conn.transaction().unwrap();
 
 	struct JobRow {
 		reason: Option<String>,

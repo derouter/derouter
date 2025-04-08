@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	database::service_jobs::{
+	db::service_jobs::{
 		consumer::{
 			confirm::consumer_confirm_job,
 			get_unconfirmed::consumer_get_unconfirmed_job,
@@ -56,7 +56,7 @@ impl Connection {
 		request_id: u32,
 		request_data: ConsumerConfirmJobCompletionRequest,
 	) {
-		type Result = crate::database::service_jobs::consumer::get_unconfirmed::ConsumerGetCompletedJobResult;
+		type Result = crate::db::service_jobs::consumer::get_unconfirmed::ConsumerGetCompletedJobResult;
 
 		let response = match consumer_get_unconfirmed_job(
 			&mut *self.state.database.lock().await,
@@ -170,7 +170,8 @@ async fn p2p_confirm_job_completion(
 		Ok(response) => match response {
 			ReqResResponse::ConfirmJobCompletion(response) => match response {
 				ConfirmJobCompletionReqResResponse::Ok => {
-					type Error = crate::database::service_jobs::consumer::confirm::ConsumerConfirmJobError;
+					type Error =
+						crate::db::service_jobs::consumer::confirm::ConsumerConfirmJobError;
 
 					match consumer_confirm_job(
 						&mut *state.database.lock().await,
@@ -216,7 +217,7 @@ async fn p2p_confirm_job_completion(
 				}
 
 				error => {
-					type ConsumerSetJobConfirmationErrorResult = crate::database::service_jobs::set_confirmation_error::SetJobConfirmationErrorResult;
+					type ConsumerSetJobConfirmationErrorResult = crate::db::service_jobs::set_confirmation_error::SetJobConfirmationErrorResult;
 
 					let confirmation_error = format!("{:?}", error);
 

@@ -3,7 +3,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	database::service_jobs::query_all::query_jobs,
+	db::service_jobs::query_all::query_jobs,
 	dto::JobRecord,
 	rpc::{
 		connection::Connection,

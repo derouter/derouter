@@ -8,7 +8,7 @@ use libp2p_stream::{Control, OpenStreamError};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use crate::{
-	database::create_service_connection,
+	db::create_service_connection,
 	p2p::STREAM_PROTOCOL,
 	rpc,
 	state::{ProvidedOffer, ProviderOutboundRequestEnvelope, SharedState},

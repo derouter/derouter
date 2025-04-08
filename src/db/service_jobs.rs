@@ -1,7 +1,7 @@
 use alloy_primitives::U256;
 use sha2::Digest;
 
-use crate::database::service_connections::Currency;
+use crate::db::service_connections::Currency;
 
 pub mod consumer;
 pub mod fail;

@@ -7,13 +7,13 @@ pub enum FailJobError {
 }
 
 pub fn fail_job(
-	database: &mut Connection,
+	conn: &mut Connection,
 	job_rowid: i64,
 	reason: String,
 	reason_class: Option<i64>,
 	private_payload: Option<String>,
 ) -> Result<(), FailJobError> {
-	let tx = database.transaction().unwrap();
+	let tx = conn.transaction().unwrap();
 
 	struct JobRow {
 		reason: Option<String>,

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	database::offers::query_offer_snapshots_by_rowid,
+	db::offers::query_offer_snapshots_by_rowid,
 	dto::OfferSnapshot,
 	rpc::{
 		connection::Connection,

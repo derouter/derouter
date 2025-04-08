@@ -21,7 +21,7 @@ pub enum ConsumerGetCompletedJobResult {
 
 /// Get an unconformed job from DB.
 pub fn consumer_get_unconfirmed_job(
-	database: &mut Connection,
+	conn: &mut Connection,
 	job_rowid: i64,
 ) -> ConsumerGetCompletedJobResult {
 	struct JobRow {
@@ -35,7 +35,7 @@ pub fn consumer_get_unconfirmed_job(
 		hash: Option<Vec<u8>>,
 	}
 
-	let job = database
+	let job = conn
 		.query_row(
 			r#"
 				SELECT

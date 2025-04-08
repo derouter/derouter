@@ -4,7 +4,7 @@ use libp2p::{
 };
 
 use crate::{
-	database::service_jobs::{
+	db::service_jobs::{
 		provider::confirm::provider_confirm_job,
 		set_confirmation_error::set_job_confirmation_error,
 	},
@@ -125,7 +125,7 @@ impl Node {
 				consumer_signature,
 			} => {
 				type Error =
-				crate::database::service_jobs::provider::confirm::ProviderConfirmJobError;
+					crate::db::service_jobs::provider::confirm::ProviderConfirmJobError;
 
 				let mut db = self.state.database.lock().await;
 
@@ -199,7 +199,7 @@ impl Node {
 							_ => unreachable!(),
 						};
 
-						type SetJobConfirmationErrorResult = crate::database::service_jobs::set_confirmation_error::SetJobConfirmationErrorResult;
+						type SetJobConfirmationErrorResult = crate::db::service_jobs::set_confirmation_error::SetJobConfirmationErrorResult;
 
 						match set_job_confirmation_error(
 							&mut db,

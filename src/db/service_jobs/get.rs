@@ -1,6 +1,6 @@
 use rusqlite::{OptionalExtension, Transaction};
 
-use crate::{database::service_connections::Currency, dto::JobRecord};
+use crate::{db::service_connections::Currency, dto::JobRecord};
 
 /// Get a single job record.
 pub fn get_job(tx: &Transaction, job_rowid: i64) -> Option<JobRecord> {

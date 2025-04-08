@@ -1,6 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::{database::service_jobs::get::get_job, dto::JobRecord};
+use crate::{db::service_jobs::get::get_job, dto::JobRecord};
 
 pub enum ConsumerCreateJobError {
 	ConnectionNotFound,
@@ -10,11 +10,11 @@ pub enum ConsumerCreateJobError {
 /// exclusively on Consumer side.
 /// Returns `job_rowid`.
 pub fn consumer_create_job(
-	database: &mut Connection,
+	conn: &mut Connection,
 	connection_rowid: i64,
 	private_payload: Option<String>,
 ) -> Result<JobRecord, ConsumerCreateJobError> {
-	let tx = database.transaction().unwrap();
+	let tx = conn.transaction().unwrap();
 
 	let job_rowid = {
 		// OPTIMIZE: Handle SQLite error instead of querying.

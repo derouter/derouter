@@ -9,10 +9,10 @@ use super::Param;
 
 /// Query offer snapshots by IDs.
 pub fn query_offer_snapshots_by_rowid(
-	database: &Connection,
+	conn: &Connection,
 	snapshot_ids: &[i64],
 ) -> Vec<OfferSnapshot> {
-	let mut statement = database
+	let mut statement = conn
 		.prepare_cached(
 			r#"
         SELECT
@@ -55,7 +55,7 @@ pub fn query_offer_snapshots_by_rowid(
 
 /// Query *active* offers.
 pub fn query_active_offers(
-	database: &rusqlite::Connection,
+	conn: &rusqlite::Connection,
 	protocol_ids: Option<&[String]>,
 	provider_peer_ids: Option<&[PeerId]>,
 ) -> Vec<OfferSnapshot> {
@@ -98,7 +98,7 @@ pub fn query_active_offers(
 	}
 
 	log::trace!("{} {:?}", sql, params);
-	let mut stmt = database.prepare_cached(&sql).unwrap();
+	let mut stmt = conn.prepare_cached(&sql).unwrap();
 
 	let offer_snapshots = stmt
 		.query_map(params_from_iter(params), |row| {

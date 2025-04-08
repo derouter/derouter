@@ -6,10 +6,10 @@ use crate::dto::ProviderRecord;
 
 /// Query providers by peer IDs.
 pub fn query_providers_by_peer_id(
-	database: &Connection,
+	conn: &Connection,
 	provider_peer_ids: &[libp2p::PeerId],
 ) -> Vec<ProviderRecord> {
-	let mut stmt = database
+	let mut stmt = conn
 		.prepare_cached(
 			r#"
 				SELECT
@@ -52,10 +52,10 @@ pub fn query_providers_by_peer_id(
 
 /// Return peer IDs of providers with recent heartbeat.
 pub fn query_active_providers(
-	database: &Connection,
+	conn: &Connection,
 	heartbeat_timeout: Duration,
 ) -> Vec<String> {
-	let mut stmt = database
+	let mut stmt = conn
 		.prepare_cached(
 			r#"
 				SELECT

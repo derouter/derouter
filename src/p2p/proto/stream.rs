@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::database::service_connections::Currency;
+use crate::db::service_connections::Currency;
 
 /// Written immediately to an outbound stream.
 #[derive(Serialize, Deserialize, Debug, Clone)]

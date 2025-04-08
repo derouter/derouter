@@ -14,12 +14,12 @@ pub mod service_connections;
 pub mod service_jobs;
 
 static DB_MIGRATIONS_DIR: Dir =
-	include_dir!("$CARGO_MANIFEST_DIR/src/database/migrations");
+	include_dir!("$CARGO_MANIFEST_DIR/src/db/migrations");
 
 static DB_MIGRATIONS: LazyLock<Migrations<'static>> =
 	LazyLock::new(|| Migrations::from_directory(&DB_MIGRATIONS_DIR).unwrap());
 
-pub fn open_database(path: &Path) -> eyre::Result<rusqlite::Connection> {
+pub fn open(path: &Path) -> eyre::Result<rusqlite::Connection> {
 	log::debug!("Opening SQLite connection at {}", path.display());
 
 	let mut conn = rusqlite::Connection::open(path)?;

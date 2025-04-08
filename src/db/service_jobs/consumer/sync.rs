@@ -1,6 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::{database::service_jobs::get::get_job, dto::JobRecord};
+use crate::{db::service_jobs::get::get_job, dto::JobRecord};
 
 pub enum ConsumerSyncJobError {
 	InvalidJobId,
@@ -13,13 +13,13 @@ pub enum ConsumerSyncJobError {
 
 /// Synchronize a previously created job with Provider's data.
 pub fn consumer_sync_job(
-	database: &mut Connection,
+	conn: &mut Connection,
 	job_rowid: i64,
 	provider_job_id: String,
 	private_payload: Option<String>,
 	created_at_sync: i64,
 ) -> Result<JobRecord, ConsumerSyncJobError> {
-	let tx = database.transaction().unwrap();
+	let tx = conn.transaction().unwrap();
 
 	struct JobRow {
 		provider_job_id: Option<String>,

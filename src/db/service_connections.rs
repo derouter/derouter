@@ -35,7 +35,7 @@ impl Currency {
 /// which will be upserted into the database.
 /// Returns `(offer_snapshot_rowid, connection_rowid)`.
 pub fn create_service_connection(
-	database: &mut rusqlite::Connection,
+	conn: &mut rusqlite::Connection,
 	offer_snapshot: Either<
 		i64,
 		(
@@ -48,7 +48,7 @@ pub fn create_service_connection(
 	consumer_peer_id: libp2p::PeerId,
 	currency: Currency,
 ) -> (i64, i64) {
-	let tx = database.transaction().unwrap();
+	let tx = conn.transaction().unwrap();
 
 	let result = {
 		let mut ensure_peer_stmt = tx

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	database::service_jobs::consumer::sync::consumer_sync_job,
+	db::service_jobs::consumer::sync::consumer_sync_job,
 	rpc::{
 		connection::Connection,
 		procedure::{
@@ -48,8 +48,7 @@ impl Connection {
 		request_id: u32,
 		request_data: ConsumerSyncJobRequest,
 	) {
-		type Error =
-			crate::database::service_jobs::consumer::sync::ConsumerSyncJobError;
+		type Error = crate::db::service_jobs::consumer::sync::ConsumerSyncJobError;
 
 		let response = match consumer_sync_job(
 			&mut *self.state.database.lock().await,

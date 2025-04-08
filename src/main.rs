@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use state::SharedState;
 use util::to_arc;
 
-mod database;
+mod db;
 mod dto;
 mod logger;
 mod p2p;

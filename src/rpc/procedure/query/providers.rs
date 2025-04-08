@@ -3,7 +3,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	database::providers::query_providers_by_peer_id,
+	db::providers::query_providers_by_peer_id,
 	dto::ProviderRecord,
 	rpc::{
 		connection::Connection,

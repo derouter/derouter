@@ -8,11 +8,11 @@ pub enum SetJobConfirmationErrorResult {
 
 /// Set the job's `confirmation_error`.
 pub fn set_job_confirmation_error(
-	database: &mut Connection,
+	conn: &mut Connection,
 	job_rowid: i64,
 	confirmation_error: &str,
 ) -> SetJobConfirmationErrorResult {
-	let tx = database.transaction().unwrap();
+	let tx = conn.transaction().unwrap();
 
 	struct JobRow {
 		signature_confirmed_at_local: Option<chrono::DateTime<chrono::Utc>>,

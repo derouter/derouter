@@ -1,7 +1,7 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
-use crate::{database::service_jobs::get::get_job, dto::JobRecord};
+use crate::{db::service_jobs::get::get_job, dto::JobRecord};
 
 pub enum ProviderCreateJobError {
 	ConnectionNotFound,
@@ -9,11 +9,11 @@ pub enum ProviderCreateJobError {
 
 /// Create a new service job, Provider-side.
 pub fn provider_create_job(
-	database: &mut Connection,
+	conn: &mut Connection,
 	connection_rowid: i64,
 	private_payload: Option<String>,
 ) -> Result<JobRecord, ProviderCreateJobError> {
-	let tx = database.transaction().unwrap();
+	let tx = conn.transaction().unwrap();
 
 	let job_rowid = {
 		// OPTIMIZE: Handle SQLite error instead of querying.

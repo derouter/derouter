@@ -1,7 +1,7 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
-	database::{
+	db::{
 		service_connections::Currency,
 		service_jobs::{JobHashingPayload, hash_job, validate_balance_delta},
 	},
@@ -21,7 +21,7 @@ pub enum ConsumerCompleteJobError {
 /// are validated in business sense (a consumer module should do it).
 #[allow(clippy::too_many_arguments)]
 pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
-	database: &mut Connection,
+	conn: &mut Connection,
 	consumer_peer_id: String,
 	job_rowid: i64,
 	balance_delta: Option<String>,
@@ -30,7 +30,7 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 	completed_at_sync: i64,
 	sign_fn: SignFn,
 ) -> Result<JobRecord, ConsumerCompleteJobError> {
-	let tx = database.transaction().unwrap();
+	let tx = conn.transaction().unwrap();
 
 	struct JobRow {
 		provider_job_id: Option<String>,

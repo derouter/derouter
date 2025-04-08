@@ -1,6 +1,6 @@
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::{database::service_jobs::get::get_job, dto::JobRecord};
+use crate::{db::service_jobs::get::get_job, dto::JobRecord};
 
 pub enum ConsumerConfirmJobError {
 	InvalidJobId,
@@ -11,10 +11,10 @@ pub enum ConsumerConfirmJobError {
 /// Mark a previosly completed job as confirmed
 /// after an actual by-wire confirmation took place.
 pub fn consumer_confirm_job(
-	database: &mut Connection,
+	conn: &mut Connection,
 	job_rowid: i64,
 ) -> Result<JobRecord, ConsumerConfirmJobError> {
-	let tx = database.transaction().unwrap();
+	let tx = conn.transaction().unwrap();
 
 	struct JobRow {
 		consumer_signature: Option<Vec<u8>>,

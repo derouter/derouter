@@ -36,7 +36,7 @@ pub struct OfferSnapshot {
 	pub provider_peer_id: String,
 	pub protocol_id: String,
 	pub offer_id: String,
-	pub protocol_payload: serde_json::Value,
+	pub protocol_payload: String,
 }
 
 /// This offer is not active anymore.

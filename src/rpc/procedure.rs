@@ -138,7 +138,7 @@ pub enum OutboundRequestFrameData {
 		customer_peer_id: String,
 		protocol_id: String,
 		offer_id: String,
-		protocol_payload: serde_json::Value,
+		protocol_payload: String,
 		connection_id: i64,
 	},
 }

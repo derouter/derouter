@@ -198,11 +198,9 @@ pub(super) async fn handle_heartbeat(
 								.and_then(|map| map.get(offer_id));
 
 							if let Some(incoming_snapshot) = incoming_snapshot {
-								let incoming_payload_string =
-									serde_json::to_string(&incoming_snapshot.protocol_payload)
-										.expect("should serialize offer payload");
-
-								if incoming_payload_string == active_snapshot.protocol_payload {
+								if incoming_snapshot.protocol_payload
+									== active_snapshot.protocol_payload
+								{
 									log::debug!(
 										"Offer snapshot did not change: {:?}",
 										active_snapshot
@@ -230,7 +228,9 @@ pub(super) async fn handle_heartbeat(
 										provider_peer_id: source.to_base58(),
 										protocol_id: protocol_id.clone(),
 										offer_id: offer_id.clone(),
-										protocol_payload: incoming_payload_string,
+										protocol_payload: incoming_snapshot
+											.protocol_payload
+											.clone(),
 									};
 
 									log::debug!("Upsert and enable {:?}", new_snapshot);
@@ -331,10 +331,7 @@ pub(super) async fn handle_heartbeat(
 										provider_peer_id: source.to_base58(),
 										protocol_id: protocol_id.clone(),
 										offer_id: offer_id.clone(),
-										protocol_payload: serde_json::to_string(
-											&incoming_offer.protocol_payload,
-										)
-										.expect("should serialize offer payload"),
+										protocol_payload: incoming_offer.protocol_payload.clone(),
 									};
 
 									log::debug!("Upsert and enable {:?}", new_snapshot);
@@ -419,8 +416,7 @@ pub(super) async fn handle_heartbeat(
 						provider_peer_id: source.to_base58(),
 						protocol_id: protocol_id.clone(),
 						offer_id: offer_id.clone(),
-						protocol_payload: serde_json::to_string(&offer.protocol_payload)
-							.expect("should serialize offer payload"),
+						protocol_payload: offer.protocol_payload.clone(),
 					};
 
 					log::debug!("Insert {:?}", new_snapshot);

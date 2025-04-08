@@ -659,17 +659,13 @@ async fn handle_incoming_stream(
 				proto::stream::ServiceConnectionHeadResponse;
 
 			let response = if let Some((_, ref offer)) = found_offer {
-				let provided_payload_string =
-					serde_json::to_string(&offer.protocol_payload)
-						.expect("should serialize provided offer payload");
-
-				if provided_payload_string == *protocol_payload {
+				if offer.protocol_payload == *protocol_payload {
 					log::debug!("🤝 Authorized incoming P2P stream");
 					ServiceConnectionHeadResponse::Ok
 				} else {
 					log::debug!(
 						"Protocol payload mismatch: {} vs {}",
-						provided_payload_string,
+						offer.protocol_payload,
 						protocol_payload
 					);
 

@@ -44,10 +44,7 @@ pub fn query_offer_snapshots_by_rowid(
 				provider_peer_id: row.get(1)?,
 				protocol_id: row.get(2)?,
 				offer_id: row.get(3)?,
-				protocol_payload: serde_json::from_str(
-					row.get_ref(4)?.as_str().unwrap(),
-				)
-				.expect("shall deserialize offer payload"),
+				protocol_payload: row.get(4)?,
 				active: row.get_ref(5)?.as_i64()? == 1,
 			})
 		})
@@ -110,10 +107,7 @@ pub fn query_active_offers(
 				provider_peer_id: row.get(1)?,
 				protocol_id: row.get(2)?,
 				offer_id: row.get(3)?,
-				protocol_payload: serde_json::from_str(
-					row.get_ref(4)?.as_str().unwrap(),
-				)
-				.expect("shall deserialize offer payload"),
+				protocol_payload: row.get(4)?,
 				active: true,
 			})
 		})

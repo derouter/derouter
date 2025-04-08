@@ -18,7 +18,7 @@ use crate::{
 pub struct ProviderProvideRequest {
 	protocol_id: String,
 	offer_id: String,
-	protocol_payload: serde_json::Value,
+	protocol_payload: String,
 }
 
 #[derive(Serialize, Debug)]

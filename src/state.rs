@@ -31,7 +31,7 @@ pub struct ProvidedOffer {
 	/// It may or may not be stored into DB yet.
 	pub snapshot_rowid: Option<i64>,
 
-	pub protocol_payload: serde_json::Value,
+	pub protocol_payload: String,
 }
 
 #[derive(Debug, Clone)]

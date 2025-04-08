@@ -39,10 +39,10 @@ pub fn create_service_connection(
 	offer_snapshot: Either<
 		i64,
 		(
-			libp2p::PeerId,     // provider_peer_id
-			&String,            // offer_id
-			&String,            // protocol_id
-			&serde_json::Value, // protocol_payload
+			libp2p::PeerId, // provider_peer_id
+			&String,        // offer_id
+			&String,        // protocol_id
+			&String,        // protocol_payload
 		),
 	>,
 	consumer_peer_id: libp2p::PeerId,
@@ -72,7 +72,7 @@ pub fn create_service_connection(
 				provider_peer_id: libp2p::PeerId,
 				offer_id: &'a String,
 				protocol_id: &'a String,
-				protocol_payload: &'a serde_json::Value,
+				protocol_payload: &'a String,
 			}
 
 			let offer_snapshot = OfferSnapshot {
@@ -131,8 +131,7 @@ pub fn create_service_connection(
 						offer_snapshot.provider_peer_id.to_base58(),
 						offer_snapshot.protocol_id,
 						offer_snapshot.offer_id,
-						serde_json::to_string(&offer_snapshot.protocol_payload)
-							.expect("should serialize offer payload"),
+						offer_snapshot.protocol_payload
 					),
 					|row| row.get(0),
 				)

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProviderOffer {
-	pub protocol_payload: serde_json::Value,
+	pub protocol_payload: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

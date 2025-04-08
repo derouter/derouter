@@ -1,4 +1,4 @@
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 pub enum SetJobConfirmationErrorResult {
 	Ok,
@@ -60,7 +60,9 @@ pub fn set_job_confirmation_error(
 		)
 		.unwrap();
 
-	update_job_stmt.execute([confirmation_error]).unwrap();
+	update_job_stmt
+		.execute(params![job_rowid, confirmation_error])
+		.unwrap();
 
 	drop(update_job_stmt);
 	tx.commit().unwrap();

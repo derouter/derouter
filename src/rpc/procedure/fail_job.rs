@@ -10,12 +10,11 @@ use crate::{
 	},
 };
 
-/// Mark a previously [created](CreateJob) job as failed.
-/// May also be called after [SyncJob].
+/// Mark a job as failed.
 #[derive(Deserialize, Debug)]
-pub struct ConsumerFailJobRequest {
-	/// Job ID returned by [`CreateJob`].
-	database_job_id: i64,
+pub struct FailJobRequest {
+	provider_peer_id: libp2p::PeerId,
+	provider_job_id: String,
 
 	/// The failure reason.
 	reason: String,
@@ -30,37 +29,50 @@ pub struct ConsumerFailJobRequest {
 
 #[derive(Serialize, Debug)]
 #[serde(tag = "tag", content = "content")]
-pub enum ConsumerFailJobResponse {
+pub enum FailJobResponse {
 	Ok,
-	InvalidJobId,
+
+	JobNotFound,
 	AlreadyCompleted,
-	AlreadyFailed,
+
+	AlreadyFailed {
+		reason: String,
+		reason_class: Option<i64>,
+	},
 }
 
 impl Connection {
-	pub async fn handle_consumer_fail_job_request(
+	pub async fn handle_fail_job_request(
 		&self,
 		request_id: u32,
-		request_data: ConsumerFailJobRequest,
+		request_data: FailJobRequest,
 	) {
 		type Error = crate::db::service_jobs::fail::FailJobError;
 
 		let response = match fail_job(
 			&mut *self.state.db.lock().await,
-			request_data.database_job_id,
-			request_data.reason,
+			request_data.provider_peer_id,
+			&request_data.provider_job_id,
+			&request_data.reason,
 			request_data.reason_class,
-			request_data.private_payload,
+			request_data.private_payload.as_deref(),
 		) {
-			Ok(_) => ConsumerFailJobResponse::Ok,
-			Err(Error::InvalidJobId) => ConsumerFailJobResponse::InvalidJobId,
-			Err(Error::AlreadyCompleted) => ConsumerFailJobResponse::AlreadyCompleted,
-			Err(Error::AlreadyFailed) => ConsumerFailJobResponse::AlreadyFailed,
+			Ok(_) => FailJobResponse::Ok,
+			Err(Error::InvalidJobId) => FailJobResponse::JobNotFound,
+			Err(Error::AlreadyCompleted) => FailJobResponse::AlreadyCompleted,
+
+			Err(Error::AlreadyFailed {
+				reason,
+				reason_class,
+			}) => FailJobResponse::AlreadyFailed {
+				reason,
+				reason_class,
+			},
 		};
 
 		let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {
 			id: request_id,
-			data: OutboundResponseFrameData::ConsumerFailJob(response),
+			data: OutboundResponseFrameData::FailJob(response),
 		});
 
 		let _ = self.outbound_tx.send(outbound_frame).await;

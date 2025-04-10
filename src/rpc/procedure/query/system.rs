@@ -14,7 +14,7 @@ pub struct SystemQueryRequest {}
 #[derive(Serialize, Debug)]
 #[serde(tag = "tag", content = "content")]
 pub enum SystemQueryResponse {
-	Ok { peer_id: String },
+	Ok { peer_id: libp2p::PeerId },
 }
 
 impl Connection {
@@ -24,15 +24,7 @@ impl Connection {
 		_request_data: &SystemQueryRequest,
 	) {
 		let response = SystemQueryResponse::Ok {
-			peer_id: self
-				.state
-				.p2p
-				.lock()
-				.await
-				.keypair
-				.public()
-				.to_peer_id()
-				.to_base58(),
+			peer_id: self.state.p2p.lock().await.keypair.public().to_peer_id(),
 		};
 
 		let outbound_frame = OutboundFrame::Response(OutboundResponseFrame {

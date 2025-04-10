@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use unwrap_none::UnwrapNone;
 
 use crate::{
+	db,
 	rpc::{
 		connection::Connection,
 		procedure::{
@@ -64,7 +65,7 @@ impl Connection {
 				}
 			}
 
-			// Find or create a new provider state module.
+			// Find or create new provider state module.
 			//
 
 			let module = if let Some(module_id) = &self.provider_module_id {
@@ -72,7 +73,8 @@ impl Connection {
 			} else {
 				let module = ProviderModuleState {
 					outbound_request_tx: self.outbound_request_tx.clone(),
-					future_service_connections: self.future_connections.clone(),
+					job_connections_counter: self.future_connection_counter.clone(),
+					future_job_connections: self.future_connections.clone(),
 					offers: HashMap::new(),
 				};
 
@@ -99,11 +101,19 @@ impl Connection {
 				},
 			};
 
+			let snapshot_rowid = db::offers::upsert(
+				&mut *self.state.db.lock().await,
+				self.state.p2p.lock().await.keypair.public().to_peer_id(),
+				offer_id,
+				protocol_id,
+				&request_data.protocol_payload,
+			);
+
 			module_offers_by_id
 				.insert(
 					request_data.offer_id.clone(),
 					ProvidedOffer {
-						snapshot_rowid: None,
+						snapshot_rowid,
 						protocol_payload: request_data.protocol_payload.clone(),
 					},
 				)
@@ -119,6 +129,7 @@ impl Connection {
 						provider_lock
 							.offers_module_map
 							.insert(protocol_id.clone(), HashMap::new());
+
 						provider_lock
 							.offers_module_map
 							.get_mut(protocol_id)

@@ -19,7 +19,7 @@ pub struct ActiveProvidersQueryRequest {}
 #[derive(Serialize, derive_more::Debug)]
 #[serde(tag = "tag", content = "content")]
 pub enum ActiveProvidersQueryResponse {
-	Ok(#[debug(skip)] Vec<String>),
+	Ok(Vec<libp2p::PeerId>),
 }
 
 impl Connection {

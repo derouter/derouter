@@ -1,4 +1,4 @@
-use std::{rc::Rc, time::Duration};
+use std::{rc::Rc, str::FromStr, time::Duration};
 
 use rusqlite::{Connection, types::Value};
 
@@ -37,7 +37,7 @@ pub fn query_providers_by_peer_id(
 	let providers = stmt
 		.query_map([provider_peer_ids], |row| {
 			Ok(ProviderRecord {
-				peer_id: row.get(0)?,
+				peer_id: libp2p::PeerId::from_str(row.get_ref(0)?.as_str()?).unwrap(),
 				name: row.get(1)?,
 				teaser: row.get(2)?,
 				description: row.get(3)?,
@@ -54,7 +54,7 @@ pub fn query_providers_by_peer_id(
 pub fn query_active_providers(
 	conn: &Connection,
 	heartbeat_timeout: Duration,
-) -> Vec<String> {
+) -> Vec<libp2p::PeerId> {
 	let mut stmt = conn
 		.prepare_cached(
 			r#"
@@ -70,7 +70,11 @@ pub fn query_active_providers(
 		.unwrap();
 
 	let interval = format!("-{} seconds", heartbeat_timeout.as_secs());
-	let peer_ids = stmt.query_map([interval], |row| row.get(0)).unwrap();
+	let peer_ids = stmt
+		.query_map([interval], |row| {
+			Ok(libp2p::PeerId::from_str(row.get_ref(0)?.as_str()?).unwrap())
+		})
+		.unwrap();
 
 	peer_ids.map(|p| p.unwrap()).collect()
 }

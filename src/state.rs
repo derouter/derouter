@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fs::create_dir_all, path::PathBuf};
+use std::{
+	collections::{HashMap, HashSet},
+	fs::create_dir_all,
+	path::PathBuf,
+	sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -8,7 +13,7 @@ use crate::{
 		JobRecord, OfferRemoved, OfferSnapshot, ProviderHeartbeat, ProviderRecord,
 	},
 	p2p, rpc,
-	util::{ArcMutex, to_arc_mutex},
+	util::{ArcMutex, ArcRw, to_arc_mutex, to_arc_rw},
 };
 
 // We want the default project name to be `org.derouter`.
@@ -23,9 +28,7 @@ const DEFAULT_SERVER_PORT: u16 = 4269;
 
 #[derive(Clone, Debug)]
 pub struct ProvidedOffer {
-	/// It may or may not be stored into DB yet.
-	pub snapshot_rowid: Option<i64>,
-
+	pub snapshot_rowid: i64,
 	pub protocol_payload: String,
 }
 
@@ -74,31 +77,22 @@ pub struct RpcState {
 	pub event_tx: tokio::sync::broadcast::Sender<RpcEvent>,
 }
 
-pub struct ProviderOutboundRequestEnvelope {
-	pub frame_data: rpc::OutboundRequestFrameData,
-	pub response_tx: tokio::sync::oneshot::Sender<rpc::InboundResponseFrameData>,
-}
-
-impl ProviderOutboundRequestEnvelope {
-	pub fn orphan(frame_data: rpc::OutboundRequestFrameData) -> Self {
-		let (response_tx, _) = tokio::sync::oneshot::channel();
-
-		Self {
-			frame_data,
-			response_tx,
-		}
-	}
+#[derive(Default)]
+pub struct ConsumerState {
+	pub job_completion_notify: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Debug)]
 pub struct ProviderModuleState {
 	/// Channel for outbound requests.
 	pub outbound_request_tx:
-		tokio::sync::mpsc::Sender<ProviderOutboundRequestEnvelope>,
+		tokio::sync::mpsc::Sender<rpc::OutboundRequestEnvelope>,
 
-	/// ROWIDs of provider service connections waiting
-	/// for the module to open a Yamux stream for it.
-	pub future_service_connections: ArcMutex<HashMap<i64, libp2p::Stream>>,
+	pub job_connections_counter: ArcMutex<u64>,
+
+	/// IDs of job connections waiting for the module
+	/// to open a Yamux stream for them.
+	pub future_job_connections: ArcMutex<HashMap<u64, libp2p::Stream>>,
 
 	/// `ProtocolId` => `OfferId` => [`Offer`](ProvidedOffer).
 	/// Synchronized with the [provider](ProviderState)'s `offers_module_map`.
@@ -120,16 +114,56 @@ pub struct ProviderState {
 	pub last_updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+pub struct FoundProvidedOffer<'a> {
+	pub module: &'a ProviderModuleState,
+	pub provided: ProvidedOffer,
+}
+
+impl ProviderState {
+	pub fn find_offer(
+		&self,
+		protocol_id: &str,
+		offer_id: &str,
+	) -> Option<FoundProvidedOffer> {
+		match self.offers_module_map.get(protocol_id) {
+			Some(module_ids_by_protocol_id) => {
+				let module_id = module_ids_by_protocol_id.get(offer_id);
+
+				module_id.map(|module_id| FoundProvidedOffer {
+					module: self.modules.get(module_id).unwrap(),
+					provided: self
+						.modules
+						.get(module_id)
+						.expect("provider module offers to be in sync")
+						.offers
+						.get(protocol_id)
+						.expect("provider module offers to be in sync")
+						.get(offer_id)
+						.expect("provider module offers to be in sync")
+						.clone(),
+				})
+			}
+			None => None,
+		}
+	}
+}
+
 pub struct P2pState {
 	/// Set when P2P is running.
 	pub keypair: libp2p::identity::Keypair,
+
+	/// Set of currently discovered peers on the network.
+	pub peers: ArcRw<HashMap<libp2p::PeerId, HashSet<libp2p::Multiaddr>>>,
+
+	/// Notify when `peers` changes.
+	pub peers_notify: Arc<tokio::sync::Notify>,
 
 	/// Channel for outbound ReqRes requests.
 	#[allow(dead_code)]
 	pub reqres_request_tx:
 		tokio::sync::mpsc::Sender<p2p::reqres::OutboundRequestEnvelope>,
 
-	/// Channel for outbound stream requests.
+	/// Channel for outbound Stream requests.
 	pub stream_request_tx:
 		tokio::sync::mpsc::Sender<p2p::stream::OutboundStreamRequest>,
 }
@@ -138,6 +172,7 @@ pub struct SharedState {
 	pub config: Config,
 	pub shutdown_token: tokio_util::sync::CancellationToken,
 	pub rpc: ArcMutex<RpcState>,
+	pub consumer: ConsumerState,
 	pub provider: ArcMutex<ProviderState>,
 	pub db: ArcMutex<rusqlite::Connection>,
 	pub p2p: ArcMutex<P2pState>,
@@ -206,6 +241,8 @@ impl SharedState {
 
 		let p2p_state = P2pState {
 			keypair,
+			peers: to_arc_rw(Default::default()),
+			peers_notify: Default::default(),
 			reqres_request_tx: p2p_reqres_request_tx,
 			stream_request_tx: p2p_stream_request_tx,
 		};
@@ -217,6 +254,8 @@ impl SharedState {
 			rpc: to_arc_mutex(RpcState {
 				event_tx: tokio::sync::broadcast::channel(32).0,
 			}),
+
+			consumer: ConsumerState::default(),
 
 			provider: to_arc_mutex(ProviderState {
 				module_ids_counter: 0,

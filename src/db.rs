@@ -2,16 +2,15 @@ use std::{path::Path, rc::Rc, sync::LazyLock};
 
 use cleanup::cleanup;
 use include_dir::{Dir, include_dir};
-use rusqlite::{ToSql, types::Value};
+use rusqlite::{CachedStatement, Connection, ToSql, Transaction, types::Value};
 use rusqlite_migration::Migrations;
-
-pub use service_connections::create_service_connection;
 
 mod cleanup;
 pub mod offers;
 pub mod providers;
-pub mod service_connections;
 pub mod service_jobs;
+
+pub use service_jobs::query_unconfirmed_jobs;
 
 static DB_MIGRATIONS_DIR: Dir =
 	include_dir!("$CARGO_MANIFEST_DIR/src/db/migrations");
@@ -48,6 +47,23 @@ impl ToSql for Param {
 		match self {
 			Param::Single(value) => value.to_sql(),
 			Param::Array(values) => values.to_sql(),
+		}
+	}
+}
+
+pub enum ConnectionLike<'conn> {
+	Connection(&'conn Connection),
+	Transaction(&'conn Transaction<'conn>),
+}
+
+impl ConnectionLike<'_> {
+	pub fn prepare_cached(
+		&self,
+		sql: &str,
+	) -> Result<CachedStatement<'_>, rusqlite::Error> {
+		match self {
+			Self::Connection(connection) => connection.prepare_cached(sql),
+			Self::Transaction(transaction) => transaction.prepare_cached(sql),
 		}
 	}
 }

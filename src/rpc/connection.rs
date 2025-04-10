@@ -1,11 +1,10 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
 	rpc::procedure::{
 		InboundFrame, InboundRequestFrameData, InboundResponseFrameData,
 		OutboundFrame, OutboundRequestFrame, OutboundRequestFrameData,
 	},
-	state::ProviderOutboundRequestEnvelope,
 	util::ArcMutex,
 };
 use tokio::{
@@ -23,16 +22,16 @@ use crate::{
 	},
 };
 
-use super::procedure::InboundRequestFrame;
+use super::{OutboundRequestEnvelope, procedure::InboundRequestFrame};
 
 pub struct Connection {
 	pub state: Arc<SharedState>,
 	pub outbound_tx: tokio::sync::mpsc::Sender<OutboundFrame>,
 	pub subscriptions_counter: u32,
 	pub subscriptions: HashMap<u32, Subscription>,
-	pub outbound_request_tx:
-		tokio::sync::mpsc::Sender<ProviderOutboundRequestEnvelope>,
-	pub future_connections: ArcMutex<HashMap<i64, libp2p::Stream>>,
+	pub outbound_request_tx: tokio::sync::mpsc::Sender<OutboundRequestEnvelope>,
+	pub future_connection_counter: ArcMutex<u64>,
+	pub future_connections: ArcMutex<HashMap<u64, libp2p::Stream>>,
 	pub provider_module_id: Option<u32>,
 }
 
@@ -63,15 +62,13 @@ impl Connection {
 	#[allow(clippy::too_many_arguments)]
 	async fn handle_inbound_request(&mut self, request: InboundRequestFrame) {
 		match request.data {
+			InboundRequestFrameData::FailJob(data) => {
+				self.handle_fail_job_request(request.id, data).await;
+			}
+
 			InboundRequestFrameData::ConsumerCompleteJob(data) => {
 				self
 					.handle_consumer_complete_job_request(request.id, data)
-					.await;
-			}
-
-			InboundRequestFrameData::ConsumerConfirmJobCompletion(data) => {
-				self
-					.handle_consumer_confirm_job_completion_request(request.id, data)
 					.await;
 			}
 
@@ -81,39 +78,19 @@ impl Connection {
 					.await;
 			}
 
-			InboundRequestFrameData::ConsumerFailJob(data) => {
-				self
-					.handle_consumer_fail_job_request(request.id, data)
-					.await;
+			InboundRequestFrameData::ConsumerGetJob(data) => {
+				self.handle_consumer_get_job_request(request.id, data).await;
 			}
 
-			InboundRequestFrameData::ConsumerOpenConnection(data) => {
+			InboundRequestFrameData::ConsumerOpenJobConnection(data) => {
 				self
-					.handle_consumer_open_connection_request(request.id, data)
-					.await;
-			}
-
-			InboundRequestFrameData::ConsumerSyncJob(data) => {
-				self
-					.handle_consumer_sync_job_request(request.id, data)
+					.handle_consumer_open_job_connection_request(request.id, data)
 					.await;
 			}
 
 			InboundRequestFrameData::ProviderCompleteJob(data) => {
 				self
 					.handle_provider_complete_job_request(request.id, data)
-					.await;
-			}
-
-			InboundRequestFrameData::ProviderCreateJob(data) => {
-				self
-					.handle_provider_create_job_request(request.id, data)
-					.await;
-			}
-
-			InboundRequestFrameData::ProviderFailJob(data) => {
-				self
-					.handle_provider_fail_job_request(request.id, data)
 					.await;
 			}
 
@@ -187,7 +164,7 @@ impl Connection {
 			subscription_protocol_ids: &Option<Vec<String>>,
 			subscription_provider_peer_ids: &Option<Vec<libp2p::PeerId>>,
 			offer_protocol_id: &str,
-			offer_provider_peer_id: &str,
+			offer_provider_peer_id: libp2p::PeerId,
 		) -> bool {
 			if let Some(protocol_ids) = subscription_protocol_ids {
 				if !protocol_ids.iter().any(|p| p == offer_protocol_id) {
@@ -201,9 +178,6 @@ impl Connection {
 					return false;
 				}
 			} else if let Some(provider_peer_ids) = subscription_provider_peer_ids {
-				let offer_provider_peer_id =
-					libp2p::PeerId::from_str(offer_provider_peer_id).unwrap();
-
 				if !provider_peer_ids
 					.iter()
 					.any(|p| *p == offer_provider_peer_id)
@@ -235,7 +209,7 @@ impl Connection {
 							protocol_ids,
 							provider_peer_ids,
 							&data.protocol_id,
-							&data.provider_peer_id,
+							data.provider_peer_id,
 						) {
 							continue;
 						}
@@ -260,7 +234,7 @@ impl Connection {
 							protocol_ids,
 							provider_peer_ids,
 							&data.protocol_id,
-							&data.provider_peer_id,
+							data.provider_peer_id,
 						) {
 							continue;
 						}
@@ -317,29 +291,29 @@ impl Connection {
 								continue;
 							}
 						} else if let Some(provider_peer_ids) = provider_peer_ids {
-							let job_provider_peer_id =
-								libp2p::PeerId::from_str(&data.provider_peer_id).unwrap();
-
-							if !provider_peer_ids.iter().any(|p| *p == job_provider_peer_id) {
+							if !provider_peer_ids
+								.iter()
+								.any(|p| *p == data.provider_peer_id)
+							{
 								log::debug!(
 									r#"Jobs subscription #{} \
      											provider peer ID mismatch: {}"#,
 									subscription_id,
-									job_provider_peer_id
+									data.provider_peer_id
 								);
 
 								continue;
 							}
 						} else if let Some(consumer_peer_ids) = consumer_peer_ids {
-							let job_consumer_peer_id =
-								libp2p::PeerId::from_str(&data.consumer_peer_id).unwrap();
-
-							if !consumer_peer_ids.iter().any(|p| *p == job_consumer_peer_id) {
+							if !consumer_peer_ids
+								.iter()
+								.any(|p| *p == data.consumer_peer_id)
+							{
 								log::debug!(
 									r#"Jobs subscription #{} \
      											consumer peer ID mismatch: {}"#,
 									subscription_id,
-									job_consumer_peer_id
+									data.consumer_peer_id
 								);
 
 								continue;
@@ -356,7 +330,7 @@ impl Connection {
 		};
 
 		for frame_data in frame_datas {
-			let outbound_frame = ProviderOutboundRequestEnvelope::orphan(frame_data);
+			let (outbound_frame, _) = OutboundRequestEnvelope::new(frame_data);
 			self.outbound_request_tx.send(outbound_frame).await.unwrap();
 		}
 	}
@@ -368,11 +342,11 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<SharedState>) {
 
 	let rpc_stream_tx = to_arc_mutex(Some(rpc_stream_tx));
 
-	let future_connections = to_arc_mutex(HashMap::<i64, libp2p::Stream>::new());
+	let future_connections = to_arc_mutex(HashMap::<u64, libp2p::Stream>::new());
 	let future_connections_clone = future_connections.clone();
 
 	let opened_connections =
-		to_arc_mutex(HashMap::<i64, tokio::task::JoinHandle<()>>::new());
+		to_arc_mutex(HashMap::<u64, tokio::task::JoinHandle<()>>::new());
 	let opened_connections_clone = opened_connections.clone();
 
 	let _ = util::yamux::YamuxServer::new(stream, None, move |yamux_stream| {
@@ -394,7 +368,7 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<SharedState>) {
 
 			let mut yamux_compat = yamux_stream.compat();
 
-			let connection_rowid = match yamux_compat.read_i64().await {
+			let connection_id = match yamux_compat.read_u64().await {
 				Ok(x) => x,
 				Err(e) => {
 					log::error!("While reading from Yamux stream: {:?}", e);
@@ -403,7 +377,7 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<SharedState>) {
 			};
 
 			if let Some(p2p_stream) =
-				future_connections.lock().await.remove(&connection_rowid)
+				future_connections.lock().await.remove(&connection_id)
 			{
 				// Connect yamux & p2p streams.
 				let handle = tokio::spawn(async move {
@@ -416,7 +390,7 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<SharedState>) {
 						Ok(_) => {
 							log::debug!(
 								"Both Yamux & P2P streams shut down ({})",
-								connection_rowid
+								connection_id
 							);
 						}
 
@@ -429,17 +403,17 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<SharedState>) {
 				opened_connections
 					.lock()
 					.await
-					.insert(connection_rowid, handle);
+					.insert(connection_id, handle);
 
 				log::debug!(
 					"✅ Successfully joined Yamux & P2P streams for connection {}",
-					connection_rowid
+					connection_id
 				);
 			} else {
 				log::warn!(
 					"Local connection ID from an incoming \
 					Yamux stream not found: {}",
-					connection_rowid
+					connection_id
 				);
 			}
 
@@ -447,7 +421,14 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<SharedState>) {
 		}
 	});
 
-	let rpc_stream = rpc_stream_rx.await.unwrap();
+	let rpc_stream = match rpc_stream_rx.await {
+		Ok(stream) => stream,
+		Err(e) => {
+			log::error!("RPC stream {e:?}, closing connection");
+			return;
+		}
+	};
+
 	let mut cbor_reader = CborBufReader::new(rpc_stream.compat());
 
 	let (outbound_tx, mut outbound_rx) =
@@ -457,7 +438,7 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<SharedState>) {
 
 	// NOTE: This channel is more specialized.
 	let (provider_outbound_request_tx, mut provider_outbound_request_rx) =
-		tokio::sync::mpsc::channel::<ProviderOutboundRequestEnvelope>(16);
+		tokio::sync::mpsc::channel::<OutboundRequestEnvelope>(16);
 
 	let mut inbound_response_txs = HashMap::<
 		u32, // <- outbound_requests_counter
@@ -476,6 +457,7 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<SharedState>) {
 
 	let mut connection = Connection {
 		state: state.clone(),
+		future_connection_counter: to_arc_mutex(0),
 		future_connections,
 		outbound_request_tx: provider_outbound_request_tx,
 		outbound_tx: outbound_tx.clone(),
@@ -510,14 +492,10 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<SharedState>) {
 					Ok(Some(InboundFrame::Response(response))) => {
 						log::debug!("⬅️ {:?}", response);
 
-						match response.data {
-							InboundResponseFrameData::Ack => {
-								if let Some(inbound_response_tx) = inbound_response_txs.remove(&response.id) {
-									let _ = inbound_response_tx.send(response.data);
-								} else {
-									log::warn!("Inbound response with unexpected ID {}", response.id);
-								}
-							},
+						if let Some(inbound_response_tx) = inbound_response_txs.remove(&response.id) {
+							let _ = inbound_response_tx.send(response.data);
+						} else {
+							log::warn!("Inbound response with unexpected ID {}", response.id);
 						}
 					},
 

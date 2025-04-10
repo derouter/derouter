@@ -107,7 +107,7 @@ impl Node {
 							.unwrap();
 
 							heartbeat_providers.push(ProviderHeartbeat {
-								peer_id: source.to_base58(),
+								peer_id: source,
 								latest_heartbeat_at: chrono::Utc::now(),
 							});
 						}
@@ -142,7 +142,7 @@ impl Node {
 							.unwrap();
 
 							updated_providers.push(ProviderRecord {
-								peer_id: source.to_base58(),
+								peer_id: source,
 								name: provider_details.name,
 								teaser: provider_details.teaser,
 								description: provider_details.description,
@@ -270,7 +270,7 @@ impl Node {
 
 										updated_offers.push(OfferSnapshot {
 											snapshot_id: snapshot_rowid,
-											provider_peer_id: source.to_base58(),
+											provider_peer_id: source,
 											protocol_id: protocol_id.clone(),
 											offer_id: offer_id.clone(),
 											protocol_payload: incoming_snapshot
@@ -298,7 +298,7 @@ impl Node {
 									removed_offers.push(OfferRemoved {
 										snapshot_id: active_snapshot.rowid,
 										protocol_id: protocol_id.to_string(),
-										provider_peer_id: source.to_base58(),
+										provider_peer_id: source,
 										offer_id: offer_id.to_string(),
 									});
 								}
@@ -366,7 +366,7 @@ impl Node {
 
 										updated_offers.push(OfferSnapshot {
 											snapshot_id: snapshot_rowid,
-											provider_peer_id: source.to_base58(),
+											provider_peer_id: source,
 											offer_id,
 											protocol_id: protocol_id.clone(),
 											protocol_payload: incoming_offer.protocol_payload,
@@ -443,7 +443,7 @@ impl Node {
 
 						updated_offers.push(OfferSnapshot {
 							snapshot_id: tx.last_insert_rowid(),
-							provider_peer_id: source.to_base58(),
+							provider_peer_id: source,
 							offer_id,
 							protocol_id: protocol_id.clone(),
 							protocol_payload: offer.protocol_payload,

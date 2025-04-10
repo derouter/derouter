@@ -1,6 +1,9 @@
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::{db::service_jobs::get::get_job, dto::JobRecord};
+use crate::{
+	db::{ConnectionLike, service_jobs::get::find_by_rowid},
+	dto::JobRecord,
+};
 
 pub enum ConsumerConfirmJobError {
 	InvalidJobId,
@@ -71,7 +74,9 @@ pub fn consumer_confirm_job(
 	update_job_stmt.execute([job_rowid]).unwrap();
 	drop(update_job_stmt);
 
-	let job_record = get_job(&tx, job_rowid).unwrap();
+	let job_record =
+		find_by_rowid(ConnectionLike::Transaction(&tx), job_rowid).unwrap();
+
 	tx.commit().unwrap();
 
 	Ok(job_record)

@@ -4,22 +4,20 @@ CREATE TABLE
     -- Local-only job row ID.
     rowid INTEGER PRIMARY KEY,
     --
-    -- A unique-per-provider Job ID, so that a job may be found
-    -- with a combination of ([job.provider_job_id] +
-    -- [connection.offer.provider_peer_id]) (synchronized).
-    -- May be NULL if Provider has not sent the ID yet.
-    provider_job_id TEXT,
+    -- Local offer snapshot reference.
+    offer_snapshot_rowid INTEGER NOT NULL REFERENCES offer_snapshots (rowid),
     --
-    -- Service connection this job is associated with (local).
-    connection_rowid INTEGER NOT NULL REFERENCES service_connections (rowid),
+    -- P2P peer ID of the consumer.
+    consumer_peer_id TEXT NOT NULL,
     --
-    -- Consumer -> Provider balance delta (synchronized).
-    -- Encoding depends on the connection's currency.
-    balance_delta TEXT,
+    -- The currency enum.
+    currency INTEGER NOT NULL,
     --
-    -- Potentially-publicly-accessible job payload,
-    -- signed by the Customer (synchronized).
-    public_payload TEXT,
+    -- Initial job arguments (local).
+    job_args TEXT,
+    --
+    -- Job ID unique per provider.
+    provider_job_id TEXT NOT NULL,
     --
     -- Private job payload (local).
     private_payload TEXT,
@@ -35,13 +33,21 @@ CREATE TABLE
     created_at_local TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     --
     -- When the job was created (synchronized UTC timestamp).
-    created_at_sync INTEGER,
+    created_at_sync INTEGER NOT NULL,
     --
     -- When the job was completed or failed (local clock).
     completed_at_local TIMESTAMP,
     --
     -- When the job was completed or failed (synchronized UTC timestamp).
     completed_at_sync INTEGER,
+    --
+    -- Potentially-publicly-accessible job payload,
+    -- signed by the Customer (synchronized).
+    public_payload TEXT,
+    --
+    -- Consumer -> Provider balance delta (synchronized).
+    -- Encoding depends on the connection's currency.
+    balance_delta TEXT,
     --
     -- Computed job hash to be signed with `consumer_signature`.
     hash BLOB,
@@ -59,11 +65,17 @@ CREATE TABLE
     confirmation_error TEXT
   );
 --
+CREATE INDEX idx_service_jobs_offer_snapshot_rowid --
+ON service_jobs (offer_snapshot_rowid);
+--
+CREATE INDEX idx_service_jobs_consumer_peer_id --
+ON service_jobs (consumer_peer_id);
+--
+CREATE INDEX idx_service_jobs_currency --
+ON service_jobs (currency);
+--
 CREATE INDEX idx_service_jobs_provider_job_id --
 ON service_jobs (provider_job_id);
---
-CREATE INDEX idx_service_jobs_connection_rowid --
-ON service_jobs (connection_rowid);
 --
 CREATE INDEX idx_service_jobs_reason --
 ON service_jobs (reason);

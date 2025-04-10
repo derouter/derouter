@@ -1,4 +1,3 @@
-use futures::executor::block_on;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -10,49 +9,47 @@ use crate::{
 		},
 	},
 	state::RpcEvent,
+	util::format_secret_option,
 };
 
-/// Mark a previously [synchronized](SyncJob) job as completed.
-/// Shall call [ConfirmJobCompletion] afterwards.
+/// Confirm job completion, and schedule a signature for sending to Provider.
 #[derive(Deserialize, derive_more::Debug)]
 pub struct ConsumerCompleteJobRequest {
-	/// Job ID returned by [`CreateJob`].
-	database_job_id: i64,
-
-	/// Publicly-available job completion timestamp, told by Provider.
-	completed_at_sync: i64,
-
-	/// Publicly-available balance delta in [Currency]-specific encoding.
-	balance_delta: Option<String>,
+	provider_peer_id: libp2p::PeerId,
+	provider_job_id: String,
 
 	/// Publicly-available job payload.
 	#[debug(skip)]
 	public_payload: String,
 
-	/// Private, local-stored payload.
-	/// Would override if already set.
-	#[debug(skip)]
+	/// Private, locally stored payload.
+	/// Would overwrite if already set.
+	#[debug("{}", format_secret_option(private_payload))]
 	private_payload: Option<String>,
+
+	/// Publicly-available balance delta in [Currency]-specific encoding.
+	balance_delta: Option<String>,
+
+	/// Publicly-available job completion timestamp, as told by the Provider.
+	completed_at_sync: i64,
 }
 
 #[derive(Serialize, Debug)]
 #[serde(tag = "tag", content = "content")]
 pub enum ConsumerCompleteJobResponse {
 	Ok,
-
-	/// Either the local P2P node is not running,
-	/// or its peer ID mismatches the job's.
-	InvalidConsumerPeerId {
-		message: String,
-	},
-
 	InvalidJobId,
-	NotSyncedYet,
-	AlreadyCompleted,
 
-	InvalidBalanceDelta {
-		message: String,
+	/// Current node's peer ID mismatches the job's.
+	InvalidConsumerPeerId,
+
+	AlreadyFailed {
+		reason: String,
+		reason_class: Option<i64>,
 	},
+
+	AlreadyCompleted,
+	InvalidBalanceDelta,
 }
 
 impl Connection {
@@ -64,57 +61,52 @@ impl Connection {
 		type Error =
 			crate::db::service_jobs::consumer::complete::ConsumerCompleteJobError;
 
-		let p2p_lock = self.state.p2p.lock().await;
-		let public_key = p2p_lock.keypair.public();
-		drop(p2p_lock);
+		let keypair = self.state.p2p.lock().await.keypair.clone();
 
-		let response = {
-			match consumer_complete_job(
-				&mut *self.state.db.lock().await,
-				public_key.to_peer_id().to_base58(),
-				request_data.database_job_id,
-				request_data.balance_delta,
-				request_data.public_payload,
-				request_data.private_payload,
-				request_data.completed_at_sync,
-				|job_hash| {
-					// ADHOC: Functions w/ `rusqlite::Connection` may not be `async`.
-					block_on(async {
-						self.state.p2p.lock().await.keypair.sign(job_hash).unwrap()
-					})
-				},
-			)
-			.await
-			{
-				Ok(job_record) => {
-					let _ = self
-						.state
-						.rpc
-						.lock()
-						.await
-						.event_tx
-						.send(RpcEvent::JobUpdated(Box::new(job_record)));
+		let response = match consumer_complete_job(
+			&mut *self.state.db.lock().await,
+			keypair.public().to_peer_id(),
+			request_data.provider_peer_id,
+			&request_data.provider_job_id,
+			request_data.balance_delta.as_deref(),
+			&request_data.public_payload,
+			request_data.private_payload.as_deref(),
+			request_data.completed_at_sync,
+			|job_hash| keypair.sign(job_hash).unwrap(),
+		) {
+			Ok(job_record) => {
+				let _ = self
+					.state
+					.rpc
+					.lock()
+					.await
+					.event_tx
+					.send(RpcEvent::JobUpdated(Box::new(job_record)));
 
-					ConsumerCompleteJobResponse::Ok
-				}
+				self.state.consumer.job_completion_notify.notify_waiters();
+				ConsumerCompleteJobResponse::Ok
+			}
 
-				Err(Error::InvalidJobId) => ConsumerCompleteJobResponse::InvalidJobId,
+			Err(Error::InvalidJobId) => ConsumerCompleteJobResponse::InvalidJobId,
 
-				Err(Error::ConsumerPeerIdMismatch) => {
-					ConsumerCompleteJobResponse::InvalidConsumerPeerId {
-						message: "Local peer ID doesn't match the job's".to_string(),
-					}
-				}
+			Err(Error::ConsumerPeerIdMismatch) => {
+				ConsumerCompleteJobResponse::InvalidConsumerPeerId
+			}
 
-				Err(Error::NotSyncedYet) => ConsumerCompleteJobResponse::NotSyncedYet,
+			Err(Error::AlreadyFailed {
+				reason,
+				reason_class,
+			}) => ConsumerCompleteJobResponse::AlreadyFailed {
+				reason,
+				reason_class,
+			},
 
-				Err(Error::AlreadyCompleted) => {
-					ConsumerCompleteJobResponse::AlreadyCompleted
-				}
+			Err(Error::AlreadyCompleted) => {
+				ConsumerCompleteJobResponse::AlreadyCompleted
+			}
 
-				Err(Error::InvalidBalanceDelta { message }) => {
-					ConsumerCompleteJobResponse::InvalidBalanceDelta { message }
-				}
+			Err(Error::InvalidBalanceDelta) => {
+				ConsumerCompleteJobResponse::InvalidBalanceDelta
 			}
 		};
 

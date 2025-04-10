@@ -1,7 +1,9 @@
-use std::rc::Rc;
+use std::{rc::Rc, str::FromStr};
 
 use libp2p::PeerId;
-use rusqlite::{Connection, params, params_from_iter, types::Value};
+use rusqlite::{
+	Connection, OptionalExtension, params, params_from_iter, types::Value,
+};
 
 use crate::dto::OfferSnapshot;
 
@@ -41,7 +43,8 @@ pub fn query_offer_snapshots_by_rowid(
 		.query_map(params![snapshot_ids], |row| {
 			Ok(OfferSnapshot {
 				snapshot_id: row.get(0)?,
-				provider_peer_id: row.get(1)?,
+				provider_peer_id: libp2p::PeerId::from_str(row.get_ref(1)?.as_str()?)
+					.unwrap(),
 				protocol_id: row.get(2)?,
 				offer_id: row.get(3)?,
 				protocol_payload: row.get(4)?,
@@ -104,7 +107,8 @@ pub fn query_active_offers(
 		.query_map(params_from_iter(params), |row| {
 			Ok(OfferSnapshot {
 				snapshot_id: row.get(0)?,
-				provider_peer_id: row.get(1)?,
+				provider_peer_id: libp2p::PeerId::from_str(row.get_ref(1)?.as_str()?)
+					.unwrap(),
 				protocol_id: row.get(2)?,
 				offer_id: row.get(3)?,
 				protocol_payload: row.get(4)?,
@@ -114,4 +118,116 @@ pub fn query_active_offers(
 		.unwrap();
 
 	offer_snapshots.map(|s| s.unwrap()).collect()
+}
+
+pub fn find(
+	conn: &rusqlite::Connection,
+	snapshot_id: i64,
+) -> Option<OfferSnapshot> {
+	let mut stmt = conn
+		.prepare_cached(
+			r#"
+				SELECT
+					rowid,            -- #0
+					provider_peer_id, -- #1
+					protocol_id,      -- #2
+					offer_id,         -- #3
+					protocol_payload, -- #4
+					active            -- #5
+				FROM
+					offer_snapshots
+				WHERE
+					rowid = ?1
+			"#,
+		)
+		.unwrap();
+
+	stmt
+		.query_row([snapshot_id], |row| {
+			Ok(OfferSnapshot {
+				snapshot_id: row.get(0)?,
+				provider_peer_id: libp2p::PeerId::from_str(row.get_ref(1)?.as_str()?)
+					.unwrap(),
+				protocol_id: row.get(2)?,
+				offer_id: row.get(3)?,
+				protocol_payload: row.get(4)?,
+				active: row.get_ref(5)?.as_i64()? == 1,
+			})
+		})
+		.optional()
+		.unwrap()
+}
+
+pub fn upsert(
+	conn: &mut Connection,
+	provider_peer_id: libp2p::PeerId,
+	offer_id: &str,
+	protocol_id: &str,
+	protocol_payload: &str,
+) -> i64 {
+	let tx = conn.transaction().unwrap();
+
+	let result = {
+		let mut ensure_peer_stmt = tx
+			.prepare_cached(
+				r#"
+					INSERT
+					INTO peers (peer_id)
+					VALUES (?1)
+					ON CONFLICT DO NOTHING
+				"#,
+			)
+			.unwrap();
+
+		match ensure_peer_stmt
+			.execute(params![provider_peer_id.to_base58()])
+			.unwrap()
+			.cmp(&0)
+		{
+			std::cmp::Ordering::Less => unreachable!(),
+			std::cmp::Ordering::Equal => {
+				log::debug!("Provider peer record already exists in DB")
+			}
+			std::cmp::Ordering::Greater => {
+				log::debug!("Inserted provider peer record")
+			}
+		}
+
+		let mut upsert_offer_snapshot_stmt = tx
+			.prepare_cached(
+				r#"
+					INSERT
+					INTO offer_snapshots (
+						provider_peer_id, -- ?1
+						protocol_id,      -- ?2
+						offer_id,         -- ?3
+						active,
+						protocol_payload -- ?4
+					)
+					VALUES (
+						?1, ?2, ?3, 1, ?4
+					)
+					ON CONFLICT DO
+						UPDATE SET active = TRUE
+					RETURNING
+						ROWID
+				"#,
+			)
+			.unwrap();
+
+		upsert_offer_snapshot_stmt
+			.query_row(
+				params![
+					provider_peer_id.to_base58(),
+					protocol_id,
+					offer_id,
+					protocol_payload
+				],
+				|row| row.get(0),
+			)
+			.unwrap()
+	};
+
+	tx.commit().unwrap();
+	result
 }

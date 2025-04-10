@@ -2,78 +2,100 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
 	db::{
-		service_connections::Currency,
-		service_jobs::{get::get_job, validate_balance_delta},
+		ConnectionLike,
+		service_jobs::{get::find_by_rowid, validate_balance_delta},
 	},
-	dto::JobRecord,
+	dto::{Currency, JobRecord},
 };
 
 pub enum ProviderCompleteJobError {
-	InvalidJobId,
-	AlreadyCompleted { completed_at_sync: i64 },
-	AlreadyFailed,
-	InvalidBalanceDelta(String),
+	JobNotFound,
+
+	AlreadyCompleted {
+		completed_at_sync: i64,
+	},
+
+	AlreadyFailed {
+		reason: String,
+		reason_class: Option<i64>,
+	},
+
+	InvalidBalanceDelta,
 }
 
 /// Mark a job as completed, locally.
 pub fn provider_complete_job(
 	conn: &mut Connection,
-	job_rowid: i64,
-	balance_delta: Option<String>,
-	private_payload: Option<String>,
-	public_payload: String,
+	provider_peer_id: libp2p::PeerId,
+	provider_job_id: &str,
+	balance_delta: Option<&str>,
+	private_payload: Option<&str>,
+	public_payload: &str,
 ) -> Result<JobRecord, ProviderCompleteJobError> {
 	let tx = conn.transaction().unwrap();
 
-	{
+	let job_rowid = {
 		struct JobRow {
+			rowid: i64,
 			completed_at_sync: Option<i64>,
 			currency: Currency,
 			reason: Option<String>,
+			reason_class: Option<i64>,
 		}
 
 		let job = tx
 			.query_row(
 				r#"
           SELECT
-						service_jobs.completed_at_sync, -- #0
-						service_connections.currency,   -- #1
-						service_jobs.reason             -- #2
-          FROM service_jobs
-					JOIN service_connections
-						ON service_connections.rowid = service_jobs.connection_rowid
-          WHERE service_jobs.rowid = ?1
+						service_jobs.rowid,             -- #0
+						service_jobs.completed_at_sync, -- #1
+						service_jobs.currency,          -- #2
+						service_jobs.reason,            -- #3
+						service_jobs.reason_class       -- #4
+          FROM
+						service_jobs
+					JOIN offer_snapshots
+						ON offer_snapshots.rowid = service_jobs.offer_snapshot_rowid
+          WHERE
+						offer_snapshots.provider_peer_id = ?1 AND
+						service_jobs.provider_job_id = ?2
         "#,
-				[job_rowid],
+				params![provider_peer_id.to_base58(), provider_job_id],
 				|row| {
 					Ok(JobRow {
-						completed_at_sync: row.get(0)?,
-						currency: Currency::try_from(row.get_ref(1)?.as_i64()?).unwrap(),
-						reason: row.get(2)?,
+						rowid: row.get(0)?,
+						completed_at_sync: row.get(1)?,
+						currency: Currency::try_from(row.get_ref(2)?.as_i64()?).unwrap(),
+						reason: row.get(3)?,
+						reason_class: row.get(4)?,
 					})
 				},
 			)
 			.optional()
 			.unwrap();
 
-		match job {
+		let job = match job {
 			Some(job) => {
-				if job.reason.is_some() {
-					return Err(ProviderCompleteJobError::AlreadyFailed);
+				if let Some(reason) = job.reason {
+					return Err(ProviderCompleteJobError::AlreadyFailed {
+						reason,
+						reason_class: job.reason_class,
+					});
 				} else if let Some(completed_at_sync) = job.completed_at_sync {
 					return Err(ProviderCompleteJobError::AlreadyCompleted {
 						completed_at_sync,
 					});
 				} else if let Some(balance_delta) = &balance_delta {
-					if let Some(err) = validate_balance_delta(balance_delta, job.currency)
-					{
-						return Err(ProviderCompleteJobError::InvalidBalanceDelta(err));
+					if validate_balance_delta(balance_delta, job.currency).is_err() {
+						return Err(ProviderCompleteJobError::InvalidBalanceDelta);
 					}
 				}
+
+				job
 			}
 
 			None => {
-				return Err(ProviderCompleteJobError::InvalidJobId);
+				return Err(ProviderCompleteJobError::JobNotFound);
 			}
 		};
 
@@ -104,7 +126,7 @@ pub fn provider_complete_job(
 
 		update_job_stmt
 			.execute(params![
-				job_rowid,
+				job.rowid,
 				balance_delta,
 				public_payload,
 				private_payload,
@@ -112,10 +134,12 @@ pub fn provider_complete_job(
 			])
 			.unwrap();
 
-		completed_at_sync
+		job.rowid
 	};
 
-	let job_record = get_job(&tx, job_rowid).unwrap();
+	let job_record =
+		find_by_rowid(ConnectionLike::Transaction(&tx), job_rowid).unwrap();
+
 	tx.commit().unwrap();
 
 	Ok(job_record)

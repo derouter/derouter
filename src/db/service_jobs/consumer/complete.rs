@@ -1,9 +1,11 @@
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 
 use crate::{
 	db::{
-		service_connections::Currency,
-		service_jobs::{JobHashingPayload, hash_job, validate_balance_delta},
+		ConnectionLike,
+		service_jobs::{
+			JobHashingPayload, get::find_by_job_id, hash_job, validate_balance_delta,
+		},
 	},
 	dto::JobRecord,
 };
@@ -11,99 +13,53 @@ use crate::{
 pub enum ConsumerCompleteJobError {
 	InvalidJobId,
 	ConsumerPeerIdMismatch,
-	NotSyncedYet,
+
+	AlreadyFailed {
+		reason: String,
+		reason_class: Option<i64>,
+	},
+
 	AlreadyCompleted,
-	InvalidBalanceDelta { message: String },
+	InvalidBalanceDelta,
 }
 
 /// On the Consumer side, mark a synced job as completed, and sign it.
 /// Neither `balance_delta` nor `public_payload` nor `completed_at_sync`
 /// are validated in business sense (a consumer module should do it).
 #[allow(clippy::too_many_arguments)]
-pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
+pub fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 	conn: &mut Connection,
-	consumer_peer_id: String,
-	job_rowid: i64,
-	balance_delta: Option<String>,
-	public_payload: String,
-	private_payload: Option<String>,
+	consumer_peer_id: libp2p::PeerId,
+	provider_peer_id: libp2p::PeerId,
+	provider_job_id: &str,
+	balance_delta: Option<&str>,
+	public_payload: &str,
+	private_payload: Option<&str>,
 	completed_at_sync: i64,
 	sign_fn: SignFn,
 ) -> Result<JobRecord, ConsumerCompleteJobError> {
 	let tx = conn.transaction().unwrap();
 
-	struct JobRow {
-		provider_job_id: Option<String>,
-		completed_at_local: Option<chrono::DateTime<chrono::Utc>>,
-		created_at_sync: Option<i64>,
-		currency: Currency,
-		consumer_peer_id: String,
-		provider_peer_id: String,
-		protocol_id: String,
-		offer_protocol_payload: String,
-		created_at_local: chrono::DateTime<chrono::Utc>,
-		offer_snapshot_rowid: i64,
-		private_payload: Option<String>,
-	}
+	let job = find_by_job_id(
+		ConnectionLike::Transaction(&tx),
+		provider_peer_id,
+		provider_job_id,
+	);
 
-	let job = tx
-		.query_row(
-			r#"
-				SELECT
-					service_jobs.provider_job_id,         -- #0
-					service_jobs.completed_at_local,      -- #1
-					service_connections.currency,         -- #2
-					service_connections.consumer_peer_id, -- #3
-					offer_snapshots.provider_peer_id,     -- #4
-					offer_snapshots.protocol_id,          -- #5
-					offer_snapshots.protocol_payload,     -- #6
-					service_jobs.created_at_sync,         -- #7
-					service_jobs.created_at_local,        -- #8
-					offer_snapshots.rowid,                -- #9
-					service_jobs.private_payload          -- #10
-				FROM service_jobs
-				JOIN service_connections
-					ON service_connections.rowid = service_jobs.connection_rowid
-				JOIN offer_snapshots
-					ON offer_snapshots.rowid = service_connections.offer_snapshot_rowid
-				WHERE
-					service_jobs.rowid = ?1
-			"#,
-			[job_rowid],
-			|row| {
-				Ok(JobRow {
-					provider_job_id: row.get(0)?,
-					completed_at_local: row.get(1)?,
-					currency: Currency::try_from(row.get_ref(2)?.as_i64()?).unwrap(),
-					consumer_peer_id: row.get(3)?,
-					provider_peer_id: row.get(4)?,
-					protocol_id: row.get(5)?,
-					offer_protocol_payload: row.get(6)?,
-					created_at_sync: row.get(7)?,
-					created_at_local: row.get(8)?,
-					offer_snapshot_rowid: row.get(9)?,
-					private_payload: row.get(10)?,
-				})
-			},
-		)
-		.optional()
-		.unwrap();
-
-	let job = match job {
+	let mut job = match job {
 		Some(job) => {
 			if job.consumer_peer_id != consumer_peer_id {
 				return Err(ConsumerCompleteJobError::ConsumerPeerIdMismatch);
-			} else if job.provider_job_id.is_none() || job.created_at_sync.is_none() {
-				return Err(ConsumerCompleteJobError::NotSyncedYet);
+			} else if let Some(reason) = job.reason {
+				return Err(ConsumerCompleteJobError::AlreadyFailed {
+					reason,
+					reason_class: job.reason_class,
+				});
 			} else if job.completed_at_local.is_some() {
 				return Err(ConsumerCompleteJobError::AlreadyCompleted);
 			} else if let Some(balance_delta) = &balance_delta {
-				if let Some(message) =
-					validate_balance_delta(balance_delta, job.currency)
-				{
-					return Err(ConsumerCompleteJobError::InvalidBalanceDelta {
-						message,
-					});
+				if validate_balance_delta(balance_delta, job.currency).is_err() {
+					return Err(ConsumerCompleteJobError::InvalidBalanceDelta);
 				}
 			}
 
@@ -113,21 +69,22 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 		None => return Err(ConsumerCompleteJobError::InvalidJobId),
 	};
 
+	let balance_delta = balance_delta.map(hex::encode);
+
 	let job_hashing_payload = JobHashingPayload {
 		consumer_peer_id: job.consumer_peer_id,
-		provider_peer_id: job.provider_peer_id.clone(),
-		protocol_id: job.protocol_id.clone(),
-		offer_payload: job.offer_protocol_payload,
-		currency: job.currency.code().to_string(),
-		provider_job_id: job.provider_job_id.clone().unwrap(),
-		job_public_payload: public_payload.clone(),
+		provider_peer_id: job.provider_peer_id,
+		protocol_id: &job.offer_protocol_id,
+		offer_payload: &job.offer_payload,
+		currency: job.currency.code(),
+		provider_job_id: &job.provider_job_id,
+		job_public_payload: public_payload,
 		job_completed_at_sync: completed_at_sync,
-		job_created_at_sync: job.created_at_sync.unwrap(),
-		balance_delta: balance_delta.as_ref().map(hex::encode),
+		job_created_at_sync: job.created_at_sync,
+		balance_delta: balance_delta.as_deref(),
 	};
 
 	let job_hash = hash_job(&job_hashing_payload);
-
 	let consumer_signature = sign_fn(&job_hash);
 	let completed_at_local = chrono::Utc::now();
 
@@ -159,7 +116,7 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 
 	update_job_stmt
 		.execute(params![
-			job_rowid,
+			job.job_rowid,
 			&balance_delta,
 			&public_payload,
 			&private_payload,
@@ -173,24 +130,15 @@ pub async fn consumer_complete_job<SignFn: Fn(&Vec<u8>) -> Vec<u8>>(
 	drop(update_job_stmt);
 	tx.commit().unwrap();
 
-	Ok(JobRecord {
-		job_rowid,
-		provider_peer_id: job.provider_peer_id,
-		consumer_peer_id,
-		offer_snapshot_rowid: job.offer_snapshot_rowid,
-		offer_protocol_id: job.protocol_id,
-		currency: job.currency,
-		balance_delta,
-		public_payload: Some(public_payload),
-		private_payload: private_payload.or(job.private_payload),
-		reason: None,
-		reason_class: None,
-		created_at_local: job.created_at_local,
-		created_at_sync: job.created_at_sync,
-		completed_at_local: Some(completed_at_local),
-		completed_at_sync: Some(completed_at_sync),
-		signature_confirmed_at_local: None,
-		confirmation_error: None,
-		provider_job_id: job.provider_job_id,
-	})
+	job.balance_delta = balance_delta;
+	job.public_payload = Some(public_payload.to_string());
+
+	if let Some(private_payload) = private_payload {
+		job.private_payload = Some(private_payload.to_string());
+	}
+
+	job.completed_at_local = Some(completed_at_local);
+	job.completed_at_sync = Some(completed_at_sync);
+
+	Ok(job)
 }

@@ -1,5 +1,5 @@
 use std::{
-	collections::HashMap,
+	collections::{HashMap, HashSet},
 	fs::create_dir_all,
 	hash::{DefaultHasher, Hash as _, Hasher as _},
 	path::Path,
@@ -8,6 +8,7 @@ use std::{
 };
 
 use futures::StreamExt as _;
+use job_confirmation_scheduler::job_confirmation_loop;
 use libp2p::{
 	StreamProtocol, Swarm, SwarmBuilder,
 	identity::Keypair,
@@ -19,6 +20,7 @@ use libp2p::{
 use crate::state::SharedState;
 
 pub mod gossipsub;
+mod job_confirmation_scheduler;
 pub mod proto;
 pub mod reqres;
 pub mod stream;
@@ -160,6 +162,8 @@ pub async fn run(
 		.unwrap();
 	drop(control);
 
+	tokio::spawn(job_confirmation_loop(state.clone()));
+
 	let mut node = Node {
 		state,
 		swarm,
@@ -213,11 +217,7 @@ pub async fn run(
 						stream
 					);
 
-					tokio::spawn(async move {
-						if let Err(e) = future.await {
-							log::warn!("{:?}", e);
-						}
-					});
+					tokio::spawn(future);
 				} else {
 					log::warn!("incoming_streams returned None, breaking loop");
           break;
@@ -246,19 +246,47 @@ impl Node {
 			SwarmEvent::Behaviour(event) => match event {
 				NodeBehaviourEvent::Mdns(event) => match event {
 					mdns::Event::Discovered(items) => {
+						let p2p = self.state.p2p.lock().await;
+						let mut peers = p2p.peers.write().await;
+
 						for (peer_id, address) in items {
 							log::debug!(
 								"👀 New mDNS address discovered: {} {}",
 								peer_id,
 								address
 							);
+
+							// Add the address to discovered peers.
+							match peers.get_mut(&peer_id) {
+								Some(x) => x,
+								None => {
+									let set = HashSet::new();
+									peers.insert(peer_id, set);
+									peers.get_mut(&peer_id).unwrap()
+								}
+							}
+							.insert(address);
 						}
+
+						p2p.peers_notify.notify_waiters();
 					}
 
 					mdns::Event::Expired(items) => {
+						let p2p = self.state.p2p.lock().await;
+						let mut peers = p2p.peers.write().await;
+
 						for (peer_id, address) in items {
 							log::debug!("💩 mDNS address expired: {} {}", peer_id, address);
+
+							// Remove the address from discovered peers.
+							let set = peers.get_mut(&peer_id).unwrap();
+							set.remove(&address);
+							if set.is_empty() {
+								peers.remove(&peer_id);
+							}
 						}
+
+						p2p.peers_notify.notify_waiters();
 					}
 				},
 

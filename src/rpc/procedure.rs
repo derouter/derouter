@@ -1,19 +1,16 @@
 use consumer::{
 	complete_job::{ConsumerCompleteJobRequest, ConsumerCompleteJobResponse},
-	confirm_job_completion::{
-		ConsumerConfirmJobCompletionRequest, ConsumerConfirmJobCompletionResponse,
-	},
 	create_job::{ConsumerCreateJobRequest, ConsumerCreateJobResponse},
-	fail_job::{ConsumerFailJobRequest, ConsumerFailJobResponse},
-	open_connection::{
-		ConsumerOpenConnectionRequest, ConsumerOpenConnectionResponse,
+	get_job::{ConsumerGetJobRequest, ConsumerGetJobResponse},
+	open_job_connection::{
+		ConsumerOpenJobConnectionRequest, ConsumerOpenJobConnectionResponse,
 	},
-	sync_job::{ConsumerSyncJobRequest, ConsumerSyncJobResponse},
 };
+use fail_job::{FailJobRequest, FailJobResponse};
 use provider::{
 	complete_job::{ProviderCompleteJobRequest, ProviderCompleteJobResponse},
-	create_job::{ProviderCreateJobRequest, ProviderCreateJobResponse},
-	fail_job::{ProviderFailJobRequest, ProviderFailJobResponse},
+	create_job::ProviderCreateJobResponse,
+	job_connection::ProviderPrepareJobConnectionResponse,
 	provide::{ProviderProvideRequest, ProviderProvideResponse},
 };
 use query::{
@@ -43,6 +40,7 @@ use crate::dto::{
 };
 
 pub mod consumer;
+pub mod fail_job;
 pub mod provider;
 pub mod query;
 pub mod subscription;
@@ -50,16 +48,14 @@ pub mod subscription;
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", content = "data")]
 pub enum InboundRequestFrameData {
+	FailJob(FailJobRequest),
+
 	ConsumerCompleteJob(ConsumerCompleteJobRequest),
-	ConsumerConfirmJobCompletion(ConsumerConfirmJobCompletionRequest),
 	ConsumerCreateJob(ConsumerCreateJobRequest),
-	ConsumerFailJob(ConsumerFailJobRequest),
-	ConsumerOpenConnection(ConsumerOpenConnectionRequest),
-	ConsumerSyncJob(ConsumerSyncJobRequest),
+	ConsumerGetJob(ConsumerGetJobRequest),
+	ConsumerOpenJobConnection(ConsumerOpenJobConnectionRequest),
 
 	ProviderCompleteJob(ProviderCompleteJobRequest),
-	ProviderCreateJob(ProviderCreateJobRequest),
-	ProviderFailJob(ProviderFailJobRequest),
 	ProviderProvide(ProviderProvideRequest),
 
 	QueryJobs(JobsQueryRequest),
@@ -88,6 +84,8 @@ pub struct InboundRequestFrame {
 #[serde(tag = "type", content = "data")]
 pub enum InboundResponseFrameData {
 	Ack,
+	ProviderCreateJob(ProviderCreateJobResponse),
+	ProviderPrepareJobConnection(ProviderPrepareJobConnectionResponse),
 }
 
 #[derive(Deserialize, Debug)]
@@ -144,16 +142,28 @@ pub enum OutboundRequestFrameData {
 		payload: Box<JobRecord>,
 	},
 
-	ProviderOpenConnection {
-		customer_peer_id: String,
+	/// Sent to a Provider module when Consumer asks for a new job.
+	ProviderCreateJob {
+		provider_peer_id: libp2p::PeerId,
 		protocol_id: String,
 		offer_id: String,
+		provider_job_id: String,
+		created_at_sync: i64,
 
+		/// Optional job arguments for immediate processing, if defined by protocol.
 		#[debug(skip)]
-		protocol_payload: String,
-
-		connection_id: i64,
+		job_args: Option<String>,
 	},
+
+	/// Sent to a Provider module when Consumer
+	/// wants to open a job connection.
+	ProviderPrepareJobConnection {
+		provider_peer_id: libp2p::PeerId,
+		provider_job_id: String,
+	},
+
+	/// Sent after [ProviderPrepareJobConnection] is verified.
+	ProviderOpenJobConnection { connection_id: u64, nonce: String },
 }
 
 #[derive(Serialize, Debug)]
@@ -169,16 +179,14 @@ pub struct OutboundRequestFrame {
 #[serde(tag = "type", content = "data")]
 #[allow(clippy::enum_variant_names)]
 pub enum OutboundResponseFrameData {
+	FailJob(FailJobResponse),
+
 	ConsumerCompleteJob(ConsumerCompleteJobResponse),
-	ConsumerConfirmJobCompletion(ConsumerConfirmJobCompletionResponse),
 	ConsumerCreateJob(ConsumerCreateJobResponse),
-	ConsumerFailJob(ConsumerFailJobResponse),
-	ConsumerOpenConnection(ConsumerOpenConnectionResponse),
-	ConsumerSyncJob(ConsumerSyncJobResponse),
+	ConsumerGetJob(ConsumerGetJobResponse),
+	ConsumerOpenJobConnection(ConsumerOpenJobConnectionResponse),
 
 	ProviderCompleteJob(ProviderCompleteJobResponse),
-	ProviderCreateJob(ProviderCreateJobResponse),
-	ProviderFailJob(ProviderFailJobResponse),
 	ProviderProvide(ProviderProvideResponse),
 
 	QueryJobs(JobsQueryResponse),

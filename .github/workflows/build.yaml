@@ -6,7 +6,7 @@ jobs:
   build:
     strategy:
       matrix:
-        BUILD_TARGET: [dev, release]
+        BUILD_TARGET: [debug, release]
         OS: [ubuntu-latest, windows-latest, macos-latest]
 
     runs-on: ${{ matrix.OS }}
@@ -24,10 +24,10 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build binaries in "${{ matrix.BUILD_TARGET }}" mode
-        run: cargo build --profile ${{ matrix.BUILD_TARGET }}
+        run: cargo build --profile ${{ matrix.BUILD_TARGET == 'debug' && 'dev' || matrix.BUILD_TARGET }}
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: derouter
+          name: derouter-${{ runner.os }}-${{ matrix.BUILD_TARGET }}
           path: target/${{ matrix.BUILD_TARGET }}/derouter

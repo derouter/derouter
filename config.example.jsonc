@@ -1,0 +1,32 @@
+{
+  // P2P bootstrap nodes multiaddrs.
+  "bootstrap": [
+    "/ip4/5.75.174.15/tcp/90/p2p/12D3KooWPHcqLQHQK3Rf7nCTMCAzM6QjA44UsrjAjhnYnokZzzJE"
+  ],
+
+  // An optional path to the data directory,
+  // otherwise platform-specific.
+  "data_dir": "./data",
+
+  // An optional path to the database file,
+  // otherwise [`data_dir`] + `"db.sqlite"`.
+  "database_path": "./data/db.sqlite",
+
+  // An optional path to the P2P keypair file,
+  // otherwise [`data_dir`] + `"keypair.bin"`.
+  "keypair_path": "./data/keypair.bin",
+
+  // Service provider settings.
+  // Omit if you're not planning on providing any services.
+  "provider": {
+    "name": "ACME Inc.",
+    "teaser": "Delivering the best digital services in the world.",
+    "description": "At ACME Inc., we're thriving to deliver the best digital service possible. We value each and every one of our customers."
+  },
+
+  // RPC server settings.
+  "server": {
+    // RPC server is available at `tcp://localhost:4269`.
+    "port": 4269 // This is the default value.
+  }
+}

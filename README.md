@@ -50,6 +50,8 @@ You must have Rust installed locally.
 RUST_LOG=debug cargo run -- -c./config.json
 ```
 
+Alternatively, you can download prebuilt binaries from the [Releases](https://github.com/derouter/derouter/releases) page.
+
 ## 🚀 Bootstrap
 
 You would need to specify addresses of other DeRouter nodes connected to the network for peer discovery in your `config.json`.

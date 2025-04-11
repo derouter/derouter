@@ -47,6 +47,9 @@ pub struct UserConfig {
 	/// otherwise platform-specific.
 	pub data_dir: Option<PathBuf>,
 
+	/// Bootstrap nodes multiaddrs.
+	pub bootstrap: Option<Vec<String>>,
+
 	pub server: Option<UserServerConfig>,
 	pub provider: Option<UserProviderConfig>,
 }

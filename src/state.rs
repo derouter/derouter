@@ -2,6 +2,7 @@ use std::{
 	collections::{HashMap, HashSet},
 	fs::create_dir_all,
 	path::PathBuf,
+	str::FromStr,
 	sync::Arc,
 };
 
@@ -68,6 +69,7 @@ pub struct Config {
 	pub database_path: PathBuf,
 	pub keypair_path: PathBuf,
 	pub data_dir: PathBuf,
+	pub bootstrap_multiaddrs: Vec<libp2p::Multiaddr>,
 	pub server: ServerConfig,
 	pub provider: ProviderConfig,
 }
@@ -220,6 +222,15 @@ impl SharedState {
 
 		let keypair = p2p::read_or_create_keypair(&keypair_path)?;
 
+		let bootstrap_multiaddrs =
+			match user_config.as_ref().and_then(|c| c.bootstrap.clone()) {
+				Some(strings) => strings
+					.iter()
+					.map(|s| libp2p::Multiaddr::from_str(s))
+					.collect::<Result<Vec<_>, _>>()?,
+				None => vec![],
+			};
+
 		let server_port = user_config
 			.as_ref()
 			.and_then(|c| c.server.as_ref().and_then(|s| s.port))
@@ -235,6 +246,7 @@ impl SharedState {
 			database_path,
 			keypair_path,
 			data_dir,
+			bootstrap_multiaddrs,
 			server: server_config,
 			provider: provider_config,
 		};

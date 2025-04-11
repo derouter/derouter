@@ -10,9 +10,9 @@ use std::{
 use futures::StreamExt as _;
 use job_confirmation_scheduler::job_confirmation_loop;
 use libp2p::{
-	StreamProtocol, Swarm, SwarmBuilder,
+	StreamProtocol, Swarm, SwarmBuilder, dcutr, identify,
 	identity::Keypair,
-	mdns, noise, ping,
+	mdns, noise, ping, relay,
 	swarm::{NetworkBehaviour, SwarmEvent},
 	tcp, yamux,
 };
@@ -25,6 +25,7 @@ pub mod proto;
 pub mod reqres;
 pub mod stream;
 
+const IDENTIFY_PROTOCOL: &str = "/derouter/identify/0.1.0";
 const STREAM_PROTOCOL: &str = "/derouter/stream/0.1.0";
 const REQUEST_RESPONSE_PROTOCOL: &str = "/derouter/reqres/0.1.0";
 
@@ -53,6 +54,9 @@ pub fn read_or_create_keypair(keypair_path: &Path) -> eyre::Result<Keypair> {
 pub struct NodeBehaviour {
 	mdns: mdns::tokio::Behaviour,
 	ping: ping::Behaviour,
+	identify: identify::Behaviour,
+	relay_client: relay::client::Behaviour,
+	dcutr: dcutr::Behaviour,
 	request_response: libp2p::request_response::cbor::Behaviour<
 		proto::request_response::Request,
 		proto::request_response::Response,
@@ -96,7 +100,8 @@ pub async fn run(
 		)?
 		.with_quic()
 		.with_dns()?
-		.with_behaviour(|keypair| {
+		.with_relay_client(noise::Config::new, yamux::Config::default)?
+		.with_behaviour(|keypair, relay_behaviour| {
 			// To content-address message, we can take
 			// the hash of message and use it as an ID.
 			let message_id_fn = |message: &libp2p::gossipsub::Message| {
@@ -122,6 +127,12 @@ pub async fn run(
 			Ok(NodeBehaviour {
 				mdns,
 				ping: ping::Behaviour::new(ping::Config::new()),
+				identify: identify::Behaviour::new(identify::Config::new(
+					IDENTIFY_PROTOCOL.to_string(),
+					keypair.public(),
+				)),
+				relay_client: relay_behaviour,
+				dcutr: dcutr::Behaviour::new(keypair.public().to_peer_id()),
 				request_response: libp2p::request_response::cbor::Behaviour::<
 					proto::request_response::Request,
 					proto::request_response::Response,
@@ -140,6 +151,10 @@ pub async fn run(
 
 	swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
 	swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+
+	for addr in &state.config.bootstrap_multiaddrs {
+		swarm.dial(addr.clone()).unwrap();
+	}
 
 	let mut provider_heartbeat_interval =
 		tokio::time::interval(std::time::Duration::from_secs(30));
@@ -303,6 +318,37 @@ impl Node {
 				NodeBehaviourEvent::Gossipsub(event) => {
 					self.handle_gossipsub_event(event).await;
 				}
+
+				NodeBehaviourEvent::Identify(event) => match event {
+					identify::Event::Received { .. } => {
+						log::debug!("🆔 [Identify] {event:?}")
+					}
+					identify::Event::Sent { .. } => {
+						log::debug!("🆔 [Identify] {event:?}");
+					}
+					identify::Event::Pushed { .. } => {
+						log::debug!("🆔 [Identify] {event:?}")
+					}
+					identify::Event::Error { .. } => {
+						log::warn!("🆔 [Identify] {event:?}")
+					}
+				},
+
+				NodeBehaviourEvent::RelayClient(event) => match event {
+					relay::client::Event::ReservationReqAccepted { .. } => {
+						log::debug!("🎏 [Relay] {event:?}")
+					}
+
+					relay::client::Event::OutboundCircuitEstablished { .. } => {
+						log::debug!("🎏 [Relay] {event:?}")
+					}
+
+					relay::client::Event::InboundCircuitEstablished { .. } => {
+						log::debug!("🎏 [Relay] {event:?}")
+					}
+				},
+
+				NodeBehaviourEvent::Dcutr(_) => log::debug!("🥊 [DCUtR] {event:?}"),
 			},
 
 			SwarmEvent::ConnectionEstablished { .. } => {
@@ -334,16 +380,16 @@ impl Node {
 				log::debug!("{:?}", event);
 			}
 
-			SwarmEvent::ListenerClosed { .. } => todo!(),
-			SwarmEvent::ListenerError { .. } => todo!(),
+			SwarmEvent::ListenerClosed { .. } => log::debug!("{event:?}"),
+			SwarmEvent::ListenerError { .. } => log::warn!("{event:?}"),
 
 			SwarmEvent::Dialing { .. } => {
 				log::trace!("{:?}", event)
 			}
 
-			SwarmEvent::NewExternalAddrCandidate { .. } => todo!(),
-			SwarmEvent::ExternalAddrConfirmed { .. } => todo!(),
-			SwarmEvent::ExternalAddrExpired { .. } => todo!(),
+			SwarmEvent::NewExternalAddrCandidate { .. } => log::debug!("{event:?}"),
+			SwarmEvent::ExternalAddrConfirmed { .. } => log::debug!("{event:?}"),
+			SwarmEvent::ExternalAddrExpired { .. } => log::debug!("{event:?}"),
 
 			SwarmEvent::NewExternalAddrOfPeer { peer_id, .. } => {
 				log::trace!("{:?}", event);

@@ -30,4 +30,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: derouter-${{ runner.os }}-${{ matrix.BUILD_TARGET }}
-          path: target/${{ matrix.BUILD_TARGET }}/derouter
+          path: target/${{ matrix.BUILD_TARGET }}/derouter${{ matrix.OS == 'windows-latest' && '.exe' || '' }}

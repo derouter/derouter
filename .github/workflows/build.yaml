@@ -1,0 +1,33 @@
+name: Rust CI
+
+on: [push]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        BUILD_TARGET: [debug, release]
+        OS: [ubuntu-latest, windows-latest, macos-latest]
+
+    runs-on: ${{ matrix.OS }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build binaries in "${{ matrix.BUILD_TARGET }}" mode
+        run: cargo build --profile ${{ matrix.BUILD_TARGET }}
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: derouter
+          path: target/${{ matrix.BUILD_TARGET }}/derouter

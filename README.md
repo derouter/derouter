@@ -32,6 +32,11 @@ DeRouter P2P node is implemented (this repository). It connects to the decentral
 [OpenAI protocol](https://github.com/derouter/protocol-openai) along with [OpenAI provider](https://github.com/derouter/provider-openai) and [OpenAI consumer](https://github.com/derouter/consumer-openai) modules are implemented.
 A module may use an RPC package for their language, such as [derouter/rpc-js](https://github.com/derouter/rpc-js).
 
+You can help shaping the future of DeRouter by joining our communities:
+
+- [Reddit](https://www.reddit.com/r/derouter)
+- [Discord](https://discord.gg/vRuWUzfRpW)
+
 ### 🚧 Roadmap
 
 - [ ] Cryptocurrency payments (Ethereum is being developed locally).

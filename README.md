@@ -1,5 +1,7 @@
 # DeRouter
 
+[![Build](https://github.com/derouter/derouter/actions/workflows/build.yaml/badge.svg)](https://github.com/derouter/derouter/actions/workflows/build.yaml)
+
 [DeRouter](https://derouter.org) is a decentralized digital service marketplace.
 
 ## 📚 Overview
